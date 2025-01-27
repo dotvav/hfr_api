@@ -6,8 +6,8 @@ with open("README.md", encoding="utf-8") as fh:
 setuptools.setup(
     name="hfr_api",
     version="0.1.1",
-    author="Vincent Roukine",
-    author_email="vincent.roukine@gmail.com",
+    author="MycRub",
+    author_email="mycrub@mycrub.net",
     description="A Python library to interface with forum.hardware.fr",
     long_description=long_description,
     long_description_content_type="text/markdown",

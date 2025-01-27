@@ -19,6 +19,7 @@ class Topic:
         self.subcat = subcat
         self.post = post
         self.messages = dict()
+        self.max_page = 0
 
     def first_messages(self, limit: int = 40) -> list[datetime]:
         return self.messages[0:limit-1]
@@ -35,17 +36,19 @@ class Topic:
 
         # Find highest page number
         pages_block = soup.find("tr", class_="fondForum2PagesHaut")
-        pages_links = pages_block.find_all("a", href=re.compile(f"^/forum2.php?config=hfr.inc&amp;cat={self.cat}&amp;subcat={self.subcat}&amp;post={self.post}&amp;page=.*"))
-        max_page = 1
-        for page in pages_links:
-            href = page.attrs["href"]
-            for param in href.split("?")[1].split("&"):
-                kv = param.split("=")
-                if kv[0] == "page":
-                    if kv[1] > max_page:
-                        max_page = kv[1]
-                    break
-        self.max_page = max_page
+        page_links = pages_block.find_all("a", class_="cHeader")
+        
+        if self.max_page == 0:
+            max_page = 1
+            for page in page_links:
+                href = page.attrs["href"]
+                for param in href.split("&"):
+                    kv = param.split("=")
+                    if kv[0] == "page":
+                        if int(kv[1]) > max_page:
+                            max_page = int(kv[1])
+                        break
+            self.max_page = max_page
 
         # Find all messages in the page
         messages_soup = soup.find_all("table", class_="messagetable")
@@ -55,7 +58,9 @@ class Topic:
                 self.add_message(message)
     
     def add_message(self, message) -> None:
-        date = message.timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+        full_dt = datetime.fromtimestamp(message.timestamp)
+        trunc_dt = full_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        date = trunc_dt.timestamp()
         
         if date in self.messages:
             messages_for_date = self.messages[date]
@@ -94,9 +99,7 @@ class Message:
 
         case2 = html.find("td", class_="messCase2")
         timestamp_str = case2.find("div", class_="toolbar").find("div", class_="left").string
-        logger.info(f"=== {timestamp_str} ===")
-
-        timestamp = Message.parse_timestamp(timestamp_str)
+        timestamp = Message.parse_timestamp(timestamp_str).timestamp()
 
         text = case2.find("div", id=f"para{id}").string
 
