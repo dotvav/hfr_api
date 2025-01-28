@@ -73,7 +73,7 @@ class Topic:
         else:
             if date > self.max_date:
                 self.max_date = date
-            logger.info(f"Got a message at date {date}")
+            logger.debug(f"Got a message at date {date}")
             messages_for_date = SortedList([], key=lambda m: m.timestamp)
             self.messages[date] = messages_for_date
         messages_for_date.add(message)
