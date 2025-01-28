@@ -1,16 +1,23 @@
 """HFR"""
 
-from datetime import datetime
+from datetime import date, datetime
 from bs4 import BeautifulSoup, NavigableString
-from typing import Any
-import re
 from sortedcontainers import SortedList
 import logging
 import requests
+import time
 
 
 logger = logging.getLogger()
-logger.setLevel("DEBUG")
+
+def date_to_str(some_date: str | date | datetime) -> str:
+    if isinstance(some_date, datetime):
+        return str(some_date.date())
+    elif isinstance(some_date, date):
+        return str(some_date)
+    elif isinstance(some_date, str):
+        return some_date
+    return None
 
 class Topic:
     
@@ -20,6 +27,7 @@ class Topic:
         self.post = post
         self.messages = dict()
         self.max_page = 0
+        self.max_date = "1970-01-01"
 
     def first_messages(self, limit: int = 40) -> list[datetime]:
         return self.messages[0:limit-1]
@@ -58,24 +66,35 @@ class Topic:
                 self.add_message(message)
     
     def add_message(self, message) -> None:
-        full_dt = datetime.fromtimestamp(message.timestamp)
-        trunc_dt = full_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        date = trunc_dt.timestamp()
+        date = date_to_str(datetime.fromtimestamp(message.timestamp)) # Truncated date 
         
         if date in self.messages:
             messages_for_date = self.messages[date]
         else:
+            if date > self.max_date:
+                self.max_date = date
+            logger.info(f"Got a message at date {date}")
             messages_for_date = SortedList([], key=lambda m: m.timestamp)
             self.messages[date] = messages_for_date
         messages_for_date.add(message)
 
     def load_page(self, page: int) -> None:
+        # Wait a second
+        # TODO check when was the last load, and wait a second before loading this one
+        time.sleep(1)
+
         url = f"https://forum.hardware.fr/forum2.php?config=hfr.inc&cat={self.cat}&subcat={self.subcat}&post={self.post}&print=1&page={page}"
 
         r = requests.get(url, headers={"Accept": "text/html", "Accept-Encoding": "gzip, deflate, br, zstd", "User-Agent": "HFRTopicSummarizer"})
         html = r.text
 
         self.parse_page_html(html)
+
+    def has_date(self, msg_date: str | date | datetime) -> bool:
+        return date_to_str(msg_date) in self.messages.keys()
+    
+    def messages_on_date(self, msg_date: str):
+        return self.messages[date_to_str(msg_date)]
 
 
 
