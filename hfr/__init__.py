@@ -61,7 +61,7 @@ class Topic:
         # Find all messages in the page
         messages_soup = soup.find_all("table", class_="messagetable")
         for message_block in messages_soup:
-            message = Message.parse_html(self, message_block)
+            message = Message.from_html(self, message_block)
             if message:
                 self.add_message(message)
     
@@ -107,10 +107,10 @@ class Message:
         self.text = text
     
     @classmethod
-    def parse_html(cls, topic: Topic, html: NavigableString):
+    def from_html(cls, topic: Topic, html: NavigableString):
         case1 = html.find("td", class_="messCase1")
 
-        author = case1.find("b", class_="s2").string
+        author = case1.find("b", class_="s2").string.replace('\u200b', '')
         if author == "Publicité":
             return None
         
@@ -120,13 +120,25 @@ class Message:
         timestamp_str = case2.find("div", class_="toolbar").find("div", class_="left").string
         timestamp = Message.parse_timestamp(timestamp_str).timestamp()
 
-        text = case2.find("div", id=f"para{id}").string
+        text_tag = case2.find("div", id=f"para{id}")
+        text = text_tag.decode_contents()
 
         return cls(topic, id, timestamp, author, text)
     
+    @classmethod
+    def from_dict(cls, topic: Topic, data: dict):
+        return cls(topic, data["id"], data["timestamp"], data["author"], data["text"])
+
     @staticmethod
     def parse_timestamp(timestamp_str: str) -> datetime:
         d = timestamp_str[9:19]
         t = timestamp_str[22:30]
         return datetime.strptime(f"{d} {t}", "%d-%m-%Y %H:%M:%S")
 
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "author": self.author,
+            "timestamp": datetime.fromtimestamp(self.timestamp).strftime("%Y-%m-%d %H:%M:%S"),
+            "text": self.text,
+        }

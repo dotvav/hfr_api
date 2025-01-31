@@ -14,7 +14,7 @@ setuptools.setup(
     license="MIT",
     url="https://gitea.ruk.info/roukine/hfr",
     packages=setuptools.find_packages(exclude=("tests", "tests.*")),
-    install_requires=[],
+    install_requires=["requests","beautifulsoup4","sortedcontainers"],
     python_requires=">=3.13",
     include_package_data=True,
 )
