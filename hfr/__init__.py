@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 from bs4 import BeautifulSoup, NavigableString
-from sortedcontainers import SortedList
+from sortedcontainers import SortedList, SortedDict
 import logging
 import requests
 import time
@@ -21,24 +21,20 @@ def date_to_str(some_date: str | date | datetime) -> str:
 
 class Topic:
     
-    def __init__(self, cat: int, subcat: int, post: int) -> None:
+    def __init__(self, cat: int, subcat: int, post: int, title: str = "", max_page: int = 0, max_date: str = "1970-01-01") -> None:
         self.cat = cat
         self.subcat = subcat
         self.post = post
+        self.title = title
+        self.max_page = max_page
+        self.max_date = max_date
         self.messages = dict()
-        self.max_page = 0
-        self.max_date = "1970-01-01"
 
-    def first_messages(self, limit: int = 40) -> list[datetime]:
-        return self.messages[0:limit-1]
+    @property
+    def id(self) -> str:
+        return f"{self.cat}#{self.subcat}#{self.post}"
 
-    def last_messages(self, limit: int = 40) -> list[datetime]:
-        return self.messages[-limit:0]
-
-    def last_update_date(self) -> datetime:
-        return self.messages[-1].timestamp
-
-    def parse_page_html(self, html: str) -> None:
+    def parse_page_html(self, html: str) -> dict:
         soup = BeautifulSoup(html, 'html.parser')
         self.title = soup.find("h3").text
 
@@ -58,27 +54,39 @@ class Topic:
                         break
             self.max_page = max_page
 
+        ts_min = 0
+        ts_max = 0
+
         # Find all messages in the page
         messages_soup = soup.find_all("table", class_="messagetable")
         for message_block in messages_soup:
             message = Message.from_html(self, message_block)
             if message:
                 self.add_message(message)
+                if ts_min == 0 or ts_min > message.posted_at:
+                    ts_min = message.posted_at
+                if ts_max == 0 or ts_max < message.posted_at:
+                    ts_max = message.posted_at
+        
+        return {
+            "ts_min": ts_min,
+            "ts_max": ts_max
+        }
     
     def add_message(self, message) -> None:
-        date = date_to_str(datetime.fromtimestamp(message.timestamp)) # Truncated date 
+        msg_date = date_to_str(message.posted_at)
         
-        if date in self.messages:
-            messages_for_date = self.messages[date]
+        if msg_date in self.messages:
+            messages_for_date = self.messages[msg_date]
         else:
-            if date > self.max_date:
-                self.max_date = date
-            logger.debug(f"Got a message at date {date}")
-            messages_for_date = SortedList([], key=lambda m: m.timestamp)
-            self.messages[date] = messages_for_date
-        messages_for_date.add(message)
+            if msg_date > self.max_date:
+                self.max_date = msg_date
+            logger.debug(f"Got a message at date {msg_date}")
+            messages_for_date = SortedDict()
+            self.messages[msg_date] = messages_for_date
+        messages_for_date[message.id] = message
 
-    def load_page(self, page: int) -> None:
+    def load_page(self, page: int) -> dict:
         # Wait a second
         # TODO check when was the last load, and wait a second before loading this one
         time.sleep(1)
@@ -88,21 +96,39 @@ class Topic:
         r = requests.get(url, headers={"Accept": "text/html", "Accept-Encoding": "gzip, deflate, br, zstd", "User-Agent": "HFRTopicSummarizer"})
         html = r.text
 
-        self.parse_page_html(html)
+        return self.parse_page_html(html)
 
     def has_date(self, msg_date: str | date | datetime) -> bool:
         return date_to_str(msg_date) in self.messages.keys()
     
     def messages_on_date(self, msg_date: str):
-        return self.messages[date_to_str(msg_date)]
+        date_str = str(msg_date)
+        if date_str in self.messages:
+            return self.messages[date_str].values()
+        else:
+            return ()
 
-
+    def to_dict(self) -> dict:
+        return {
+            "topic_id": f"{self.cat}#{self.subcat}#{self.post}",
+            "title": self.title,
+            "max_page": self.max_page,
+            "max_date": self.max_date
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict):
+        if "topic_id" in data:
+            (cat, subcat, post) = str.split(data["topic_id"], "#")
+            return cls(cat, subcat, post, data["title"], data["max_page"], data["max_date"])
+        else:
+            return cls(data["cat"], data["subcat"], data["post"], data["title"], data["max_page"], data["max_date"])
 
 class Message:
-    def __init__(self, topic: Topic, id: int, timestamp: datetime, author:str, text: str) -> None:
+    def __init__(self, topic: Topic, id: int, posted_at: datetime, author:str, text: str) -> None:
         self.topic = topic
         self.id = id
-        self.timestamp = timestamp
+        self.posted_at = posted_at
         self.author = author
         self.text = text
     
@@ -117,18 +143,14 @@ class Message:
         id = case1.find("a", rel="nofollow").attrs["href"][2:]
 
         case2 = html.find("td", class_="messCase2")
-        timestamp_str = case2.find("div", class_="toolbar").find("div", class_="left").string
-        timestamp = Message.parse_timestamp(timestamp_str).timestamp()
+        posted_at_str = case2.find("div", class_="toolbar").find("div", class_="left").string
+        posted_at = Message.parse_timestamp(posted_at_str)
 
         text_tag = case2.find("div", id=f"para{id}")
         text = text_tag.decode_contents()
 
-        return cls(topic, id, timestamp, author, text)
+        return cls(topic, id, posted_at, author, text)
     
-    @classmethod
-    def from_dict(cls, topic: Topic, data: dict):
-        return cls(topic, data["id"], data["timestamp"], data["author"], data["text"])
-
     @staticmethod
     def parse_timestamp(timestamp_str: str) -> datetime:
         d = timestamp_str[9:19]
@@ -139,6 +161,10 @@ class Message:
         return {
             "id": self.id,
             "author": self.author,
-            "timestamp": datetime.fromtimestamp(self.timestamp).strftime("%Y-%m-%d %H:%M:%S"),
+            "posted_at": str(self.posted_at),
             "text": self.text,
         }
+    
+    @classmethod
+    def from_dict(cls, topic: Topic, data: dict):
+        return cls(topic, data["id"], datetime.fromtimestamp(int(data["posted_at"])), data["author"], data["text"])
