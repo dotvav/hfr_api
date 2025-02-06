@@ -83,7 +83,8 @@ def convert_inline_tags(html: str, context: dict = {}) -> str:
             if "citation" in table_class:
                 bb_tag = "quotemsg"
                 href = element.find("a").get("href")
-                bb_details = f"={href.split('#t')[1]},0,0"  # TODO create reference =msgid,?,userid
+                href_tokens = href.split('#t')
+                bb_details = f"={href_tokens[1] if len(href_tokens) > 1 else "0"},0,0"  # TODO create reference =msgid,?,userid
             else:
                 bb_tag = table_class
                 bb_details = ""
