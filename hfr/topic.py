@@ -32,6 +32,7 @@ class Topic:
         title: str = "",
         max_page: int = 0,
         max_date: str = "1970-01-01",
+        sticky: bool = False,
     ) -> None:
         self.cat = cat
         self.subcat = subcat
@@ -39,6 +40,7 @@ class Topic:
         self.title = title
         self.max_page = max_page
         self.max_date = max_date
+        self.sticky = sticky
         self.messages = dict()
 
     @property

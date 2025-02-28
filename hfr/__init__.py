@@ -3,3 +3,4 @@
 from . import bb
 from .message import Message
 from .topic import Topic
+from .category import Category
