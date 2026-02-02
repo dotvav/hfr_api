@@ -1,2 +1,36 @@
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
+[project]
+name = "hfr-api"
+version = "0.0.6"
+description = "A Python library to interface with forum.hardware.fr"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4==4.12.3",
+    "requests==2.32.3",
+    "sortedcontainers==2.4.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+]
+authors = [
+    {name = "MycRub", email = "mycrub@mycrub.net"}
+]
+license = {text = "MIT"}
+urls = { Repository = "https://gitea.ruk.info/roukine/hfr" }
+
+[project.scripts]
+hfr = "hfr.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "syrupy",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["hfr"]
