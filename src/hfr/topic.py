@@ -49,7 +49,10 @@ class Topic:
 
     def parse_page_html(self, html: str) -> dict:
         soup = BeautifulSoup(html, "html.parser")
-        self.title = soup.find("h3").text
+        title_tag = soup.find("h3")
+        if not title_tag:
+            raise ValueError("Topic not found or access denied")
+        self.title = title_tag.text
 
         # Find highest page number
         pages_block = soup.find("tr", class_="fondForum2PagesHaut")

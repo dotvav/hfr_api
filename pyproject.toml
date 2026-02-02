@@ -33,4 +33,4 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["hfr"]
+packages = ["src/hfr"]

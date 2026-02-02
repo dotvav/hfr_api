@@ -62,6 +62,18 @@ for date_str, messages_dict in topic.messages.items():
 
 The package includes a command-line interface to interact with the forum.
 
+### Installation
+
+You can install the CLI tool using `uv` or `pipx`:
+
+```bash
+uv tool install hfr-api
+# or
+pipx install hfr-api
+```
+
+Once installed, the `hfr` command will be available in your path.
+
 ### Get Topic Info
 
 Retrieve metadata about a topic as JSON.
@@ -77,12 +89,16 @@ hfr info 13 432 73768
 Dump all messages from a topic (or a specific page) to JSON.
 
 ```bash
-hfr dump <cat> <subcat> <post> [--page <page_number>]
-# Example: Dump all pages
-hfr dump 13 432 73768
+hfr dump <cat> <subcat> <post> <output_file> [--page <page_number>]
 
-# Example: Dump only page 1
-hfr dump 13 432 73768 --page 1
+# Example: Dump all pages to a file
+hfr dump 13 432 73768 my_topic.json
+
+# Example: Dump all pages to stdout
+hfr dump 13 432 73768 - > my_topic.json
+
+# Example: Dump only page 1 to a file
+hfr dump 13 432 73768 page1.json --page 1
 ```
 
 ## Features
