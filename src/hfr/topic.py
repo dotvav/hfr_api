@@ -5,7 +5,7 @@ import time
 from datetime import date, datetime
 
 import requests
-from bs4 import BeautifulSoup
+from lxml import html as lxml_html
 from sortedcontainers import SortedDict
 
 from .message import Message
@@ -47,36 +47,39 @@ class Topic:
     def id(self) -> str:
         return f"{self.cat}#{self.subcat}#{self.post}"
 
-    def parse_page_html(self, html: str) -> dict:
-        soup = BeautifulSoup(html, "html.parser")
-        title_tag = soup.find("h3")
-        if not title_tag:
+    def parse_page_html(self, html_text: str) -> dict:
+        tree = lxml_html.fromstring(html_text)
+
+        # Get title
+        h3 = tree.find(".//h3")
+        if h3 is None:
             raise ValueError("Topic not found or access denied")
-        self.title = title_tag.text
+        self.title = h3.text_content()
 
         # Find highest page number
-        pages_block = soup.find("tr", class_="fondForum2PagesHaut")
-        page_links = pages_block.find_all("a", class_="cHeader")
+        pages_rows = tree.xpath('//tr[contains(@class, "fondForum2PagesHaut")]')
+        if pages_rows:
+            page_links = pages_rows[0].xpath('.//a[contains(@class, "cHeader")]')
 
-        if self.max_page == 0:
-            max_page = 1
-            for page in page_links:
-                href = page.attrs["href"]
-                for param in href.split("&"):
-                    kv = param.split("=")
-                    if kv[0] == "page":
-                        if int(kv[1]) > max_page:
-                            max_page = int(kv[1])
-                        break
-            self.max_page = max_page
+            if self.max_page == 0:
+                max_page = 1
+                for link in page_links:
+                    href = link.get("href", "")
+                    for param in href.split("&"):
+                        kv = param.split("=")
+                        if kv[0] == "page":
+                            if int(kv[1]) > max_page:
+                                max_page = int(kv[1])
+                            break
+                self.max_page = max_page
 
         ts_min = 0
         ts_max = 0
 
         # Find all messages in the page
-        messages_soup = soup.find_all("table", class_="messagetable")
-        for message_block in messages_soup:
-            message = Message.from_html(self, message_block)
+        message_tables = tree.xpath('//table[contains(@class, "messagetable")]')
+        for message_block in message_tables:
+            message = Message.from_lxml(self, message_block)
             if message:
                 self.add_message(message)
                 if ts_min == 0 or ts_min > message.posted_at:
@@ -112,9 +115,9 @@ class Topic:
                 "User-Agent": "HFRTopicSummarizer",
             },
         )
-        html = r.text
+        html_text = r.text
 
-        return self.parse_page_html(html)
+        return self.parse_page_html(html_text)
 
     def has_date(self, msg_date: str | date | datetime) -> bool:
         return date_to_str(msg_date) in self.messages.keys()

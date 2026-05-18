@@ -5,11 +5,10 @@ from datetime import datetime
 from typing import Final
 
 import requests
-from bs4 import BeautifulSoup
+from lxml import html as lxml_html
 
 from .topic import Topic
 
-import re
 
 CATEGORY_ID_INT_TO_STR: Final = {
     1: "Hardware",
@@ -293,29 +292,33 @@ class Category:
                 "User-Agent": "HFRTopicSummarizer",
             },
         )
-        html = r.text
+        html_text = r.text
 
-        return self.parse_page_html(html)
+        return self.parse_page_html(html_text)
 
-    def parse_page_html(self, html: str) -> dict:
+    def parse_page_html(self, html_text: str) -> dict:
         ts_min = None
         ts_max = None
 
-        soup = BeautifulSoup(html, "html.parser")
+        tree = lxml_html.fromstring(html_text)
 
-        for topic_soup in soup.find_all("tr", class_="sujet"):
-            href = topic_soup.find("td", class_="sujetCase3").find("a").attrs["href"]
-            sticky = bool(
-                topic_soup.find("td", class_="sujetCase3").find(
-                    "img",
-                    src=re.compile(r".*sticky.gif$"),
-                )
-            )
+        for topic_row in tree.xpath('//tr[contains(@class, "sujet")]'):
+            case3 = topic_row.xpath('.//td[contains(@class, "sujetCase3")]')
+            if not case3:
+                continue
+            link = case3[0].find(".//a")
+            if link is None:
+                continue
+            href = link.get("href", "")
+            sticky_imgs = case3[0].xpath('.//img[contains(@src, "sticky.gif")]')
+            sticky = bool(sticky_imgs)
             post = int(href.split("_")[-2])
             cat_str = href.split("/")[2]
             subcat_str = href.split("/")[3]
-            nb_messages = int(topic_soup.find("td", class_="sujetCase7").get_text())
-            last_message = topic_soup.find("td", class_="sujetCase9").get_text()
+            case7 = topic_row.xpath('.//td[contains(@class, "sujetCase7")]')
+            nb_messages = int(case7[0].text_content()) if case7 else 0
+            case9 = topic_row.xpath('.//td[contains(@class, "sujetCase9")]')
+            last_message = case9[0].text_content() if case9 else ""
             ts = self.parse_timestamp(last_message)
             max_page = int(1 + nb_messages / 1000)
 

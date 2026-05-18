@@ -1,11 +1,11 @@
 [project]
 name = "hfr-api"
-version = "0.0.6"
+version = "0.1.0"
 description = "A Python library to interface with forum.hardware.fr"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "beautifulsoup4==4.12.3",
+    "lxml>=5.0.0",
     "requests==2.32.3",
     "sortedcontainers==2.4.0",
     "typer>=0.9.0",

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from bs4 import NavigableString
+from lxml import etree
 
 from . import bb
 
@@ -22,23 +22,56 @@ class Message:
         self.text = text
 
     @classmethod
-    def from_html(cls, topic: "Topic", html: NavigableString):
-        case1 = html.find("td", class_="messCase1")
+    def from_lxml(cls, topic: "Topic", element):
+        """Parse a message from an lxml element (table.messagetable)."""
+        # Find messCase1 td
+        case1_list = element.xpath('.//td[contains(@class, "messCase1")]')
+        if not case1_list:
+            return None
+        case1 = case1_list[0]
 
-        author = case1.find("b", class_="s2").string.replace("\u200b", "")
+        # Get author
+        author_el = case1.xpath('.//b[contains(@class, "s2")]')
+        if not author_el:
+            return None
+        author = author_el[0].text_content().replace("\u200b", "")
         if author == "Publicité":
             return None
 
-        id = case1.find("a", rel="nofollow").attrs["href"][2:]
+        # Get message id
+        nofollow_links = case1.xpath('.//a[@rel="nofollow"]')
+        if not nofollow_links:
+            return None
+        id = nofollow_links[0].get("href", "")[2:]
 
-        case2 = html.find("td", class_="messCase2")
-        posted_at_str = (
-            case2.find("div", class_="toolbar").find("div", class_="left").string
-        )
+        # Find messCase2 td
+        case2_list = element.xpath('.//td[contains(@class, "messCase2")]')
+        if not case2_list:
+            return None
+        case2 = case2_list[0]
+
+        # Get timestamp
+        toolbar = case2.xpath('.//div[contains(@class, "toolbar")]')
+        if not toolbar:
+            return None
+        left_div = toolbar[0].xpath('.//div[contains(@class, "left")]')
+        if not left_div:
+            return None
+        posted_at_str = left_div[0].text_content()
         posted_at = Message.parse_timestamp(posted_at_str)
 
-        text_tag = case2.find("div", id=f"para{id}")
-        text = bb.html_to_bb(text_tag.decode_contents())
+        # Get message text - extract inner HTML of the para div
+        text_divs = case2.xpath(f'.//div[@id="para{id}"]')
+        if not text_divs:
+            return None
+        # Get inner HTML of the div
+        text_html = etree.tostring(text_divs[0], encoding="unicode", method="html")
+        # Strip the outer div tags
+        inner_start = text_html.find(">") + 1
+        inner_end = text_html.rfind("</div>")
+        inner_html = text_html[inner_start:inner_end] if inner_end > inner_start else ""
+
+        text = bb.html_to_bb(inner_html)
 
         return cls(topic, id, posted_at, author, text)
 
