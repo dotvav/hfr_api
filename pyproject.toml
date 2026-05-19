@@ -32,5 +32,13 @@ dev = [
     "syrupy",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "syrupy",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/hfr"]
