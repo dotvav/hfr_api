@@ -299,6 +299,7 @@ class Category:
     def parse_page_html(self, html_text: str) -> dict:
         ts_min = None
         ts_max = None
+        warnings = []
 
         tree = lxml_html.fromstring(html_text)
 
@@ -312,9 +313,37 @@ class Category:
             href = link.get("href", "")
             sticky_imgs = case3[0].xpath('.//img[contains(@src, "sticky.gif")]')
             sticky = bool(sticky_imgs)
-            post = int(href.split("_")[-2])
-            cat_str = href.split("/")[2]
-            subcat_str = href.split("/")[3]
+            parts = href.split("_")
+            if len(parts) < 2:
+                continue
+            post = int(parts[-2])
+            href_parts = href.split("/")
+            if len(href_parts) < 4:
+                continue
+            cat_str = href_parts[2]
+            subcat_str = href_parts[3]
+
+            # Resolve subcat ID: use 0 as default for unknown subcategories
+            if cat_str not in CATSUBCAT_ID_STR_TO_INT:
+                warnings.append({
+                    "type": "unknown_category",
+                    "category": cat_str,
+                    "subcategory": subcat_str,
+                    "href": href,
+                })
+                continue
+            subcat_map = CATSUBCAT_ID_STR_TO_INT[cat_str]
+            if subcat_str in subcat_map:
+                subcat_id = subcat_map[subcat_str]
+            else:
+                subcat_id = 0
+                warnings.append({
+                    "type": "unknown_subcategory",
+                    "category": cat_str,
+                    "subcategory": subcat_str,
+                    "href": href,
+                })
+
             case7 = topic_row.xpath('.//td[contains(@class, "sujetCase7")]')
             nb_messages = int(case7[0].text_content()) if case7 else 0
             case9 = topic_row.xpath('.//td[contains(@class, "sujetCase9")]')
@@ -325,7 +354,7 @@ class Category:
             self.topics.append(
                 Topic(
                     cat=self.id,
-                    subcat=CATSUBCAT_ID_STR_TO_INT[cat_str][subcat_str],
+                    subcat=subcat_id,
                     post=post,
                     max_page=max_page,
                     max_date=ts.strftime("%Y-%m-%d"),
@@ -339,4 +368,4 @@ class Category:
                 if not ts_max or ts > ts_max:
                     ts_max = ts
 
-        return {"ts_min": ts_min, "ts_max": ts_max}
+        return {"ts_min": ts_min, "ts_max": ts_max, "warnings": warnings}
