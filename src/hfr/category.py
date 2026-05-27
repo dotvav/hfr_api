@@ -30,6 +30,7 @@ CATEGORY_ID_INT_TO_STR: Final = {
     6: "AchatsVentes",
     8: "EmploiEtudes",
     13: "Discussions",
+    32: "ia",
 }
 
 CATSUBCAT_ID_STR_TO_INT: Final = {
@@ -258,6 +259,7 @@ CATSUBCAT_ID_STR_TO_INT: Final = {
         "voyages": 557,
         "Viepratique": 432,
     },
+    "ia": {},
 }
 
 
@@ -323,26 +325,35 @@ class Category:
             cat_str = href_parts[2]
             subcat_str = href_parts[3]
 
-            # Resolve subcat ID: use 0 as default for unknown subcategories
-            if cat_str not in CATSUBCAT_ID_STR_TO_INT:
-                warnings.append({
-                    "type": "unknown_category",
-                    "category": cat_str,
-                    "subcategory": subcat_str,
-                    "href": href,
-                })
-                continue
-            subcat_map = CATSUBCAT_ID_STR_TO_INT[cat_str]
-            if subcat_str in subcat_map:
-                subcat_id = subcat_map[subcat_str]
-            else:
+            # Determine if this URL has a subcategory or not.
+            # Format with subcat:    /hfr/Category/Subcategory/topic-slug-sujet_ID_page.htm
+            # Format without subcat: /hfr/Category/topic-slug-sujet_ID_page.htm
+            # The topic slug always contains "sujet_"
+            if "sujet_" in subcat_str:
+                # No subcategory — the "subcat" position is actually the topic slug
+                subcat_str = None
                 subcat_id = 0
-                warnings.append({
-                    "type": "unknown_subcategory",
-                    "category": cat_str,
-                    "subcategory": subcat_str,
-                    "href": href,
-                })
+            else:
+                # Has a subcategory — resolve it
+                if cat_str not in CATSUBCAT_ID_STR_TO_INT:
+                    warnings.append({
+                        "type": "unknown_category",
+                        "category": cat_str,
+                        "subcategory": subcat_str,
+                        "href": href,
+                    })
+                    continue
+                subcat_map = CATSUBCAT_ID_STR_TO_INT[cat_str]
+                if subcat_str in subcat_map:
+                    subcat_id = subcat_map[subcat_str]
+                else:
+                    subcat_id = 0
+                    warnings.append({
+                        "type": "unknown_subcategory",
+                        "category": cat_str,
+                        "subcategory": subcat_str,
+                        "href": href,
+                    })
 
             case7 = topic_row.xpath('.//td[contains(@class, "sujetCase7")]')
             nb_messages = int(case7[0].text_content()) if case7 else 0
