@@ -3,6 +3,7 @@
 import logging
 import time
 from datetime import date, datetime
+from typing import Any, Optional
 
 import requests
 from lxml import html as lxml_html
@@ -102,22 +103,26 @@ class Topic:
             self.messages[msg_date] = messages_for_date
         messages_for_date[message.id] = message
 
-    def load_page(self, page: int) -> dict:
-        time.sleep(1)
-
+    def load_page(self, page: int, session: Optional[Any] = None) -> dict:
         url = f"https://forum.hardware.fr/forum2.php?config=hfr.inc&cat={self.cat}&subcat={self.subcat}&post={self.post}&print=1&page={page}"
+        headers = {
+            "Accept": "text/html",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "User-Agent": "HFRTopicSummarizer",
+        }
 
-        r = requests.get(
-            url,
-            headers={
-                "Accept": "text/html",
-                "Accept-Encoding": "gzip, deflate, br, zstd",
-                "User-Agent": "HFRTopicSummarizer",
-            },
-        )
-        html_text = r.text
+        if session is not None:
+            r = session.get(url)
+        else:
+            time.sleep(0.5)
+            r = requests.get(url, headers=headers)
 
-        return self.parse_page_html(html_text)
+        if r.status_code != 200:
+            raise RuntimeError(
+                f"Failed to fetch topic {self.cat}#{self.subcat}#{self.post} page {page}: HTTP {r.status_code}"
+            )
+
+        return self.parse_page_html(r.text)
 
     def has_date(self, msg_date: str | date | datetime) -> bool:
         return date_to_str(msg_date) in self.messages.keys()
