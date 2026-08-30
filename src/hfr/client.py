@@ -184,13 +184,14 @@ class HFRClient:
         self.ensure_authenticated()
         tokens = self.get_post_form_tokens(cat, subcat, post)
 
+        formatted_content = bb.emoji_to_cdn_bb(content)
         post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
         payload = {
             "action_form": "1",
             "cat": str(cat),
             "subcat": str(subcat),
             "post": str(post),
-            "content_form": content,
+            "content_form": formatted_content,
             "hash_check": tokens.get("hash_check", ""),
             "signature": "1",
             "verifform": "1",
@@ -284,13 +285,14 @@ class HFRClient:
         self.ensure_authenticated()
         tokens = self.get_post_form_tokens(cat=0, subcat=0, post=mp_id)
 
+        formatted_content = bb.emoji_to_cdn_bb(content)
         post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
         payload = {
-            "action_form": "1",
+            "action_form": "2",
             "cat": "prive",
             "post": str(mp_id),
             "dest": recipient,
-            "content_form": content,
+            "content_form": formatted_content,
             "hash_check": tokens.get("hash_check", ""),
             "signature": "1",
             "verifform": "1",

@@ -73,3 +73,14 @@ def test_format_quote():
 def test_format_author_quote():
     q = bb.format_author_quote(author="MycRub", text="Hello world")
     assert q == "[quote=MycRub]Hello world[/quote]"
+
+
+def test_emoji_to_cdn_bb():
+    # Simple emoji
+    assert bb.emoji_to_cdn_bb("Super ! 🚀") == "Super ! [img]https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/1f680.png[/img]"
+    # Modifier / Skin tone
+    assert bb.emoji_to_cdn_bb("👍🏽") == "[img]https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/1f44d-1f3fd.png[/img]"
+    # Zero Width Joiner sequence
+    assert bb.emoji_to_cdn_bb("👨‍💻") == "[img]https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/1f468-200d-1f4bb.png[/img]"
+    # Plain text untouched
+    assert bb.emoji_to_cdn_bb("Texte sans emoji") == "Texte sans emoji"

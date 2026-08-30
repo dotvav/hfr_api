@@ -146,3 +146,53 @@ def format_author_quote(author: str, text: str) -> str:
     """Construct a simple author quote tag [quote=Pseudo]...[/quote]."""
     clean_text = text.strip()
     return f"[quote={author}]{clean_text}[/quote]"
+
+
+import re
+
+EMOJI_PATTERN = re.compile(
+    r"("
+    r"[\U0001F1E6-\U0001F1FF]{2}|"  # flags
+    r"[\U0001F600-\U0001F64F]|"  # emoticons
+    r"[\U0001F300-\U0001F5FF]|"  # misc symbols & pictographs
+    r"[\U0001F680-\U0001F6FF]|"  # transport & maps
+    r"[\U0001F700-\U0001F77F]|"  # alchemical
+    r"[\U0001F780-\U0001F7FF]|"  # geometric
+    r"[\U0001F800-\U0001F8FF]|"  # supplemental arrows
+    r"[\U0001F900-\U0001F9FF]|"  # supplemental symbols & pictographs
+    r"[\U0001FA00-\U0001FA6F]|"  # chess
+    r"[\U0001FA70-\U0001FAFF]|"  # symbols and pictographs extended-a
+    r"[\U00002600-\U000026FF]|"  # misc symbols (e.g. ☕, ⚠️)
+    r"[\U00002700-\U000027BF]"  # dingbats (e.g. ✨, ✈️)
+    r")"
+    r"("
+    r"[\U0001F3FB-\U0001F3FF]|"  # skin tone modifiers
+    r"\uFE0E|\uFE0F|"  # variation selectors
+    r"\u200D("  # zero width joiner sequences
+    r"[\U0001F1E6-\U0001F1FF]{2}|"
+    r"[\U0001F600-\U0001F64F]|"
+    r"[\U0001F300-\U0001F5FF]|"
+    r"[\U0001F680-\U0001F6FF]|"
+    r"[\U0001F900-\U0001F9FF]|"
+    r"[\U0001FA70-\U0001FAFF]|"
+    r"[\U00002600-\U000027BF]"
+    r")"
+    r")*"
+)
+
+
+def emoji_to_cdn_bb(text: str) -> str:
+    """Convert raw Unicode emojis to public high-availability Twemoji CDN [img] tags."""
+
+    def _replace(match: re.Match[str]) -> str:
+        emoji_seq = match.group(0)
+        # Drop variation selectors (U+FE0E, U+FE0F) for CDN matching
+        cps = [f"{ord(c):x}" for c in emoji_seq if ord(c) not in (0xFE0E, 0xFE0F)]
+        if not cps:
+            return ""
+        slug = "-".join(cps)
+        url = f"https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/{slug}.png"
+        return f"[img]{url}[/img]"
+
+    return EMOJI_PATTERN.sub(_replace, text)
+
