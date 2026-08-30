@@ -148,6 +148,23 @@ def format_author_quote(author: str, text: str) -> str:
     return f"[quote={author}]{clean_text}[/quote]"
 
 
+def extract_parent_quote_ids(bbcode_text: str) -> list[int]:
+    """Extract referenced message IDs from [quotemsg=ID,...] BBCode tags in text."""
+    import re
+
+    pattern = re.compile(r"\[quotemsg=(\d+)", re.IGNORECASE)
+    matches = pattern.findall(bbcode_text)
+    ids: list[int] = []
+    for m in matches:
+        try:
+            val = int(m)
+            if val > 0 and val not in ids:
+                ids.append(val)
+        except ValueError:
+            pass
+    return ids
+
+
 import re
 
 EMOJI_PATTERN = re.compile(

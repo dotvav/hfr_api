@@ -198,6 +198,29 @@ class HFRClient:
                     messages.append(msg)
         return messages
 
+    def get_post_by_id(
+        self, cat: int | str, subcat: int | str, post: int, msg_id: int
+    ) -> Optional[Message]:
+        """Directly fetch the message and its surrounding page using MesDiscussions numreponse."""
+        self.ensure_authenticated()
+        cat_str = str(cat)
+        subcat_str = str(subcat)
+        url = f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&numreponse={msg_id}"
+        resp = self.session.get(url, allow_redirects=True)
+        if resp.status_code != 200:
+            logger.error("Failed to fetch message #%s on topic %s: HTTP %s", msg_id, post, resp.status_code)
+            return None
+
+        topic = Topic(cat=int(cat) if str(cat).isdigit() else 0, subcat=int(subcat) if str(subcat).isdigit() else 0, post=post)
+        topic.parse_page_html(resp.text)
+
+        # Lookup message by exact ID in parsed page
+        str_id = str(msg_id)
+        for date_key in topic.messages:
+            if str_id in topic.messages[date_key]:
+                return topic.messages[date_key][str_id]
+        return None
+
     def get_post_form_tokens(self, cat: int | str, subcat: int | str, post: int) -> dict[str, str]:
         """Fetch hash_check, numrep, and form metadata required to submit a reply."""
         self.ensure_authenticated()
