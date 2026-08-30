@@ -129,3 +129,20 @@ def html_to_bb(html_str: str) -> str:
     wrapped = f"<div>{cleaned}</div>"
     root = lxml_html.fragment_fromstring(wrapped, create_parent=False)
     return convert_inline_tags(root).strip()
+
+
+def format_quote(
+    message_id: int | str,
+    text: str,
+    user_id: int = 0,
+    parent_quote_id: int = 0,
+) -> str:
+    """Construct an HFR [quotemsg] tag with specific message ID and user ID metadata."""
+    clean_text = text.strip()
+    return f"[quotemsg={message_id},{user_id},{parent_quote_id}]{clean_text}[/quotemsg]"
+
+
+def format_author_quote(author: str, text: str) -> str:
+    """Construct a simple author quote tag [quote=Pseudo]...[/quote]."""
+    clean_text = text.strip()
+    return f"[quote={author}]{clean_text}[/quote]"

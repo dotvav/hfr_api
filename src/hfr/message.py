@@ -81,6 +81,11 @@ class Message:
         t = timestamp_str[22:30]
         return datetime.strptime(f"{d} {t}", "%d-%m-%Y %H:%M:%S")
 
+    def quote(self, text: str | None = None, user_id: int = 0) -> str:
+        """Generate a formatted [quotemsg] tag for this message."""
+        quote_text = text if text is not None else self.text
+        return bb.format_quote(message_id=self.id, text=quote_text, user_id=user_id)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,

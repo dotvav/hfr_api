@@ -61,4 +61,15 @@ Texte [#0000FF]bleu[/#0000FF] et [#FF0000]rouge[/#FF0000]"""
     output = bb.html_to_bb(input)
     assert expected == output
 
-    pass
+
+def test_format_quote():
+    q = bb.format_quote(message_id=75205063, text="Test message", user_id=256366)
+    assert q == "[quotemsg=75205063,256366,0]Test message[/quotemsg]"
+
+    q_simple = bb.format_quote(message_id="12345", text="Coucou")
+    assert q_simple == "[quotemsg=12345,0,0]Coucou[/quotemsg]"
+
+
+def test_format_author_quote():
+    q = bb.format_author_quote(author="MycRub", text="Hello world")
+    assert q == "[quote=MycRub]Hello world[/quote]"
