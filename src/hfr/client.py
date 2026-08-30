@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from curl_cffi import requests as cffi_requests
 from lxml import html as lxml_html
 
+from . import bb
 from .message import Message
 from .topic import Topic
 
