@@ -81,24 +81,27 @@ class HFRClient:
             with open(self.cookies_path, "r", encoding="utf-8") as f:
                 cookie_dict = json.load(f)
                 for k, v in cookie_dict.items():
-                    self.session.cookies.set(k, v, domain="forum.hardware.fr")
+                    self.session.cookies.set(k, v, domain=".hardware.fr")
             logger.debug("HFR session cookies loaded from %s", self.cookies_path)
         except Exception as e:
             logger.warning("Failed to load cookies from %s: %s", self.cookies_path, e)
 
     def is_logged_in(self) -> bool:
-        """Check if current session is authenticated."""
+        """Check if current session is authenticated by verifying access to private messages."""
         try:
             resp = self.session.get(f"{self.base_url}/forum1.php?config=hfr.inc&cat=prive")
             if resp.status_code != 200:
                 return False
-            return "deconnexion" in resp.text.lower() or "boite de reception" in resp.text.lower()
+            # Check for title or indicators of successful MP area access vs guest access denied
+            has_mp_title = "Messages priv" in resp.text
+            has_denied = "ne faites pas partie des membres" in resp.text or "non autoris" in resp.text.lower()
+            return has_mp_title and not has_denied
         except Exception as e:
             logger.error("Error verifying login status: %s", e)
             return False
 
     def login(self, force: bool = False) -> bool:
-        """Authenticate to HFR with credentials."""
+        """Authenticate to HFR with credentials handling MesDiscussions two-step meta-refresh."""
         if not force and self.is_logged_in():
             logger.info("Existing HFR session is valid.")
             return True
@@ -107,15 +110,52 @@ class HFRClient:
             logger.warning("HFR credentials not provided; proceeding in read-only mode.")
             return False
 
-        login_url = f"{self.base_url}/auth.php"
+        validation_url = f"{self.base_url}/login_validation.php?config=hfr.inc"
         data = {
-            "login": self.username,
+            "hash_check": "",
+            "pseudo": self.username,
             "password": self.password,
-            "remember": "1",
-            "Submit": "Valider",
+            "cat": "",
+            "page": "1",
+            "config": "hfr.inc",
+            "p": "1",
+            "sondage": "0",
+            "owntopic": "0",
+            "post": "",
+            "referer": f"{self.base_url}/",
+            "Valider": "Valider",
         }
-        resp = self.session.post(login_url, data=data)
-        if resp.status_code in (200, 302) and self.is_logged_in():
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": self.base_url,
+            "Referer": f"{self.base_url}/login.php?config=hardwarefr.inc",
+        }
+
+        # Step 1: Submit credentials to validation endpoint
+        resp1 = self.session.post(validation_url, data=data, headers=headers)
+        if "login_redirection" not in resp1.text and "Vérification" not in resp1.text:
+            logger.error("Failed to authenticate to HFR as %s (validation rejected)", self.username)
+            return False
+
+        # Extract redirect URL from <meta http-equiv="Refresh" content="1; url=...">
+        import re
+
+        match = re.search(r'url=([^\s"\'>]+)', resp1.text, re.IGNORECASE)
+        redirect_path = (
+            match.group(1)
+            if match
+            else "login_redirection.php?config=hfr.inc&referer_page=https%3A%2F%2Fforum.hardware.fr%2F"
+        )
+        redirect_url = (
+            redirect_path
+            if redirect_path.startswith("http")
+            else f"{self.base_url}/{redirect_path.lstrip('/')}"
+        )
+
+        # Step 2: Follow meta-refresh to commit session cookies (md_user, md_passs, md_id)
+        self.session.get(redirect_url, headers={"Referer": validation_url})
+
+        if self.is_logged_in():
             logger.info("Successfully authenticated to HFR as %s", self.username)
             self.save_cookies()
             return True

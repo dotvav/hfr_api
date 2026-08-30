@@ -30,13 +30,16 @@ def test_hfr_client_initialization(tmp_path: Path):
 def test_hfr_client_is_logged_in(mock_session):
     client = HFRClient(username="test_bot", password="secret_password")
 
-    mock_resp_unauth = MagicMock(status_code=200, text="<html><body>Veuillez vous identifier</body></html>")
+    mock_resp_unauth = MagicMock(
+        status_code=200,
+        text="<html><body>Désolé, vous ne faites pas partie des membres ayant accès à cette catégorie</body></html>",
+    )
     mock_session.get.return_value = mock_resp_unauth
     assert client.is_logged_in() is False
 
     mock_resp_auth = MagicMock(
         status_code=200,
-        text="<html><body><a href='/auth.php?action=disconnect'>Deconnexion</a> Boite de reception</body></html>",
+        text="<html><head><title>Messages privés - FORUM HardWare.fr</title></head><body><h1>Messages privés</h1></body></html>",
     )
     mock_session.get.return_value = mock_resp_auth
     assert client.is_logged_in() is True
@@ -50,11 +53,18 @@ def test_hfr_client_login_success(mock_session, tmp_path: Path):
         cookies_path=cookies_path,
     )
 
+    mock_session.post.return_value = MagicMock(
+        status_code=200,
+        text='<html><head><meta http-equiv="Refresh" content="1; url=login_redirection.php?config=hfr.inc" /></head><body>Vérification de votre identification...</body></html>',
+    )
     mock_session.get.side_effect = [
-        MagicMock(status_code=200, text="Login page"),
-        MagicMock(status_code=200, text="Deconnexion"),
+        MagicMock(status_code=200, text="<html><body>Non autorise</body></html>"),  # initial is_logged_in check
+        MagicMock(status_code=200, text="Login redirection success"),  # follow redirection
+        MagicMock(
+            status_code=200,
+            text="<html><head><title>Messages privés - FORUM HardWare.fr</title></head><body><h1>Messages privés</h1></body></html>",
+        ),  # post-login is_logged_in check
     ]
-    mock_session.post.return_value = MagicMock(status_code=200, text="Logged in")
 
     assert client.login() is True
     assert cookies_path.exists()
@@ -65,8 +75,8 @@ def test_hfr_client_list_mps(mock_session):
 
     mp_html = """
     <html>
+      <head><title>Messages privés - FORUM HardWare.fr</title></head>
       <body>
-        <a href='/auth.php?action=disconnect'>Deconnexion</a>
         <table class='forum-list'>
           <tr class='fondForum2PriveNonLu'>
             <td class='sujetCaseAuteur'><b>ModoUser</b></td>
