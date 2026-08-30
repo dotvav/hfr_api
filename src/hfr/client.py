@@ -197,16 +197,26 @@ class HFRClient:
                     messages.append(msg)
         return messages
 
-    def get_post_form_tokens(self, cat: int, subcat: int, post: int) -> dict[str, str]:
-        """Fetch hash_check and form metadata required to submit a reply."""
+    def get_post_form_tokens(self, cat: int | str, subcat: int | str, post: int) -> dict[str, str]:
+        """Fetch hash_check, numrep, and form metadata required to submit a reply."""
         self.ensure_authenticated()
+        cat_str = str(cat)
+        subcat_str = str(subcat)
         resp = self.session.get(
-            f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat}&subcat={subcat}&post={post}&page=1"
+            f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&page=1"
         )
         tree = lxml_html.fromstring(resp.text)
-        hash_inputs = tree.xpath('//input[@name="hash_check"]')
-        hash_check = hash_inputs[0].get("value") if hash_inputs else ""
-        return {"hash_check": hash_check}
+        form = tree.xpath('//form[contains(@action, "bddpost.php")]')
+        tokens: dict[str, str] = {}
+        if form:
+            for inp in form[0].xpath('.//input'):
+                name = inp.get("name")
+                if name:
+                    tokens[name] = inp.get("value") or ""
+        else:
+            hash_inputs = tree.xpath('//input[@name="hash_check"]')
+            tokens["hash_check"] = hash_inputs[0].get("value") if hash_inputs else ""
+        return tokens
 
     def post_reply(
         self,
@@ -222,7 +232,7 @@ class HFRClient:
             return True
 
         self.ensure_authenticated()
-        tokens = self.get_post_form_tokens(cat, subcat, post)
+        tokens = self.get_post_form_tokens(cat=cat, subcat=subcat, post=post)
 
         formatted_content = bb.emoji_to_cdn_bb(content)
         post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
@@ -233,6 +243,8 @@ class HFRClient:
             "post": str(post),
             "content_form": formatted_content,
             "hash_check": tokens.get("hash_check", ""),
+            "numrep": tokens.get("numrep", ""),
+            "verifrequet": tokens.get("verifrequet", "1100"),
             "signature": "1",
             "verifform": "1",
         }
@@ -262,17 +274,17 @@ class HFRClient:
             return []
 
         tree = lxml_html.fromstring(resp.text)
+        # MesDiscussions uses <tr class="sujet ligne_booleen ..."> for each thread/MP row
         mp_rows = tree.xpath(
-            '//tr[contains(@class, "fondForum2PriveNonLu") or contains(@class, "fondForum2Prive")]'
+            '//tr[contains(@class, "sujet") and (contains(@class, "ligne_booleen") or contains(@class, "cBackCouleurTab"))]'
         )
         results: list[HFRPrivateMessage] = []
 
         for row in mp_rows:
-            is_unread = "NonLu" in (row.get("class") or "")
-            if unread_only and not is_unread:
-                continue
-
-            links = row.xpath('.//a[contains(@class, "cTopic")]')
+            # 1. Subject & post ID
+            links = row.xpath(
+                './/td[contains(@class, "sujetCase3")]//a | .//a[contains(@class, "cTopic") or contains(@class, "cCatTopic")]'
+            )
             if not links:
                 continue
             subject = links[0].text_content().strip()
@@ -281,11 +293,27 @@ class HFRClient:
             qs = parse_qs(urlparse(href).query)
             mp_id = qs.get("post", [""])[0]
 
-            author_cells = row.xpath('.//td[contains(@class, "sujetCaseAuteur")]')
+            # 2. Interlocuteur / Sender (Case 6)
+            author_cells = row.xpath('.//td[contains(@class, "sujetCase6")]')
             sender = author_cells[0].text_content().strip() if author_cells else "Unknown"
 
-            date_cells = row.xpath('.//td[contains(@class, "sujetCaseDate")]')
+            # 3. Date of last message (Case 9)
+            date_cells = row.xpath('.//td[contains(@class, "sujetCase9")]')
             date_str = date_cells[0].text_content().strip() if date_cells else str(datetime.now())
+
+            # 4. Unread detection via Case 1 icon (closedbp.gif indicates unread / new message)
+            case1_imgs = row.xpath('.//td[contains(@class, "sujetCase1")]//img')
+            img_src = case1_imgs[0].get("src", "") if case1_imgs else ""
+            img_alt = case1_imgs[0].get("alt", "") if case1_imgs else ""
+            is_unread = (
+                "closedbp" in img_src
+                or "new" in img_src
+                or img_alt.lower() == "on"
+                or "NonLu" in (row.get("class") or "")
+            )
+
+            if unread_only and not is_unread:
+                continue
 
             results.append(
                 HFRPrivateMessage(
@@ -323,18 +351,21 @@ class HFRClient:
             return True
 
         self.ensure_authenticated()
-        tokens = self.get_post_form_tokens(cat=0, subcat=0, post=mp_id)
+        tokens = self.get_post_form_tokens(cat="prive", subcat=0, post=mp_id)
 
         formatted_content = bb.emoji_to_cdn_bb(content)
         post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
         payload = {
             "action_form": "2",
             "cat": "prive",
+            "subcat": "0",
             "post": str(mp_id),
             "dest": recipient,
             "content_form": formatted_content,
             "hash_check": tokens.get("hash_check", ""),
-            "signature": "1",
+            "numrep": tokens.get("numrep", ""),
+            "verifrequet": tokens.get("verifrequet", "1100"),
+            "signature": "0",
             "verifform": "1",
         }
 
