@@ -256,9 +256,19 @@ class HFRClient:
             headers={
                 "Referer": f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat}&subcat={subcat}&post={post}"
             },
+            allow_redirects=True,
         )
 
         if resp.status_code in (200, 302):
+            tree = lxml_html.fromstring(resp.text)
+            body_text = tree.xpath("//body")[0].text_content() if tree.xpath("//body") else resp.text
+            if "Afin de prevenir les tentatives de flood" in body_text:
+                logger.error("Failed to post reply: HFR flood protection triggered (%s)", body_text.strip())
+                return False
+            if "Une erreur est survenue" in body_text or "Erreur" in body_text and "Retour" in body_text:
+                logger.error("Failed to post reply: HFR error page returned (%s)", body_text.strip()[:200])
+                return False
+
             logger.info("Successfully posted reply to topic %s#%s#%s", cat, subcat, post)
             return True
 
@@ -356,19 +366,12 @@ class HFRClient:
 
         formatted_content = bb.emoji_to_cdn_bb(content)
         post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
-        payload = {
-            "action_form": "2",
-            "cat": "prive",
-            "subcat": "0",
-            "post": str(mp_id),
-            "dest": recipient,
-            "content_form": formatted_content,
-            "hash_check": tokens.get("hash_check", ""),
-            "numrep": tokens.get("numrep", ""),
-            "verifrequet": tokens.get("verifrequet", "1100"),
-            "signature": "0",
-            "verifform": "1",
-        }
+
+        # Merge all tokens parsed directly from the live page form
+        payload = dict(tokens)
+        payload["content_form"] = formatted_content
+        payload["action_form"] = "2"
+        payload["dest"] = recipient
 
         resp = self.session.post(
             post_url,
@@ -376,9 +379,19 @@ class HFRClient:
             headers={
                 "Referer": f"{self.base_url}/forum2.php?config=hfr.inc&cat=prive&post={mp_id}"
             },
+            allow_redirects=True,
         )
 
         if resp.status_code in (200, 302):
+            tree = lxml_html.fromstring(resp.text)
+            body_text = tree.xpath("//body")[0].text_content() if tree.xpath("//body") else resp.text
+            if "Afin de prevenir les tentatives de flood" in body_text:
+                logger.error("Failed to reply to MP %s: HFR flood protection triggered (%s)", mp_id, body_text.strip())
+                return False
+            if "Une erreur est survenue" in body_text or "Erreur" in body_text and "Retour" in body_text:
+                logger.error("Failed to reply to MP %s: HFR error page returned (%s)", mp_id, body_text.strip()[:200])
+                return False
+
             logger.info("Successfully posted reply to MP %s", mp_id)
             return True
 
