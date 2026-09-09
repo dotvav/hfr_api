@@ -1,6 +1,7 @@
 """An HFR message"""
 
 from datetime import datetime
+import re
 from typing import TYPE_CHECKING
 
 from lxml import etree
@@ -13,13 +14,20 @@ if TYPE_CHECKING:
 
 class Message:
     def __init__(
-        self, topic, id: int, posted_at: datetime, author: str, text: str
+        self,
+        topic,
+        id: int,
+        posted_at: datetime,
+        author: str,
+        text: str,
+        user_id: int = 0,
     ) -> None:
         self.topic = topic
         self.id = id
         self.posted_at = posted_at
         self.author = author
         self.text = text
+        self.user_id = user_id
 
     @classmethod
     def from_lxml(cls, topic: "Topic", element):
@@ -50,6 +58,16 @@ class Message:
             return None
         case2 = case2_list[0]
 
+        # Get user_id from profile link if present
+        user_id = 0
+        profil_links = case2.xpath('.//a[contains(@href, "profil-")]')
+        for link in profil_links:
+            href = link.get("href", "")
+            m = re.search(r"profil-(\d+)\.htm", href)
+            if m:
+                user_id = int(m.group(1))
+                break
+
         # Get timestamp
         toolbar = case2.xpath('.//div[contains(@class, "toolbar")]')
         if not toolbar:
@@ -73,7 +91,7 @@ class Message:
 
         text = bb.html_to_bb(inner_html)
 
-        return cls(topic, id, posted_at, author, text)
+        return cls(topic, id, posted_at, author, text, user_id=user_id)
 
     @staticmethod
     def parse_timestamp(timestamp_str: str) -> datetime:
@@ -81,10 +99,11 @@ class Message:
         t = timestamp_str[22:30]
         return datetime.strptime(f"{d} {t}", "%d-%m-%Y %H:%M:%S")
 
-    def quote(self, text: str | None = None, user_id: int = 0) -> str:
+    def quote(self, text: str | None = None, user_id: int | None = None) -> str:
         """Generate a formatted [quotemsg] tag for this message."""
         quote_text = text if text is not None else self.text
-        return bb.format_quote(message_id=self.id, text=quote_text, user_id=user_id)
+        uid = self.user_id if user_id is None else user_id
+        return bb.format_quote(message_id=self.id, text=quote_text, user_id=uid)
 
     def to_dict(self) -> dict:
         return {
@@ -92,6 +111,7 @@ class Message:
             "author": self.author,
             "posted_at": str(self.posted_at),
             "text": self.text,
+            "user_id": self.user_id,
         }
 
     @classmethod
@@ -102,4 +122,5 @@ class Message:
             datetime.fromtimestamp(int(data["posted_at"])),
             data["author"],
             data["text"],
+            user_id=data.get("user_id", 0),
         )
