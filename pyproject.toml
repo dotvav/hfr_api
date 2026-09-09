@@ -1,6 +1,6 @@
 [project]
 name = "hfr-api"
-version = "0.3.6"
+version = "0.3.7"
 description = "A Python library to interface with forum.hardware.fr"
 readme = "README.md"
 requires-python = ">=3.13"

@@ -60,7 +60,7 @@ class Message:
 
         # Get user_id from profile link if present
         user_id = 0
-        profil_links = case2.xpath('.//a[contains(@href, "profil-")]')
+        profil_links = element.xpath('.//a[contains(@href, "profil-")]')
         for link in profil_links:
             href = link.get("href", "")
             m = re.search(r"profil-(\d+)\.htm", href)

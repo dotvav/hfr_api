@@ -363,7 +363,7 @@ class HFRClient:
     def get_mp_page(self, mp_id: int, page: int = 1) -> Topic:
         """Fetch and parse a private message thread."""
         self.ensure_authenticated()
-        url = f"{self.base_url}/forum2.php?config=hfr.inc&cat=prive&post={mp_id}&print=1&page={page}"
+        url = f"{self.base_url}/forum2.php?config=hfr.inc&cat=prive&post={mp_id}&page={page}"
         resp = self.session.get(url)
         if resp.status_code != 200:
             raise RuntimeError(f"Failed to fetch MP thread {mp_id} page {page}: HTTP {resp.status_code}")

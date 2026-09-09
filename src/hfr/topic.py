@@ -104,7 +104,7 @@ class Topic:
         messages_for_date[message.id] = message
 
     def load_page(self, page: int, session: Optional[Any] = None) -> dict:
-        url = f"https://forum.hardware.fr/forum2.php?config=hfr.inc&cat={self.cat}&subcat={self.subcat}&post={self.post}&print=1&page={page}"
+        url = f"https://forum.hardware.fr/forum2.php?config=hfr.inc&cat={self.cat}&subcat={self.subcat}&post={self.post}&page={page}"
         headers = {
             "Accept": "text/html",
             "Accept-Encoding": "gzip, deflate, br, zstd",
