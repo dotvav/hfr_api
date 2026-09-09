@@ -32,7 +32,7 @@ class Message:
         self.ref = ref
 
     @classmethod
-    def from_lxml(cls, topic: "Topic", element):
+    def from_lxml(cls, topic: "Topic", element, page: int = 1, index_on_page: int = 1):
         """Parse a message from an lxml element (table.messagetable)."""
         # Find messCase1 td
         case1_list = element.xpath('.//td[contains(@class, "messCase1")]')
@@ -70,8 +70,8 @@ class Message:
                 user_id = int(m.group(1))
                 break
 
-        # Get absolute message ref in topic
-        ref = 1
+        # Get absolute message ref in topic (default to page position offset)
+        ref = max(1, (page - 1) * 40 + index_on_page)
         addflag_links = element.xpath('.//a[contains(@href, "addflag.php")]')
         if addflag_links:
             href = addflag_links[0].get("href", "")

@@ -1,6 +1,7 @@
 """An HFR Topic"""
 
 import logging
+import re
 import time
 from datetime import date, datetime
 from typing import Any, Optional
@@ -48,7 +49,7 @@ class Topic:
     def id(self) -> str:
         return f"{self.cat}#{self.subcat}#{self.post}"
 
-    def parse_page_html(self, html_text: str) -> dict:
+    def parse_page_html(self, html_text: str, page: int = 1) -> dict:
         tree = lxml_html.fromstring(html_text)
 
         # Get title
@@ -58,29 +59,33 @@ class Topic:
         self.title = h3.text_content()
 
         # Find highest page number
+        max_page = max(page, self.max_page, 1)
         pages_rows = tree.xpath('//tr[contains(@class, "fondForum2PagesHaut")]')
         if pages_rows:
-            page_links = pages_rows[0].xpath('.//a[contains(@class, "cHeader")]')
+            for el in pages_rows[0].xpath('.//a | .//b | .//span'):
+                text = el.text_content().strip()
+                if text.isdigit() and int(text) > max_page:
+                    max_page = int(text)
 
-            if self.max_page == 0:
-                max_page = 1
-                for link in page_links:
-                    href = link.get("href", "")
-                    for param in href.split("&"):
-                        kv = param.split("=")
-                        if kv[0] == "page":
-                            if int(kv[1]) > max_page:
-                                max_page = int(kv[1])
-                            break
-                self.max_page = max_page
+                href = el.get("href", "")
+                if href:
+                    m_rewritten = re.search(r"sujet_\d+_(\d+)\.htm", href)
+                    if m_rewritten and int(m_rewritten.group(1)) > max_page:
+                        max_page = int(m_rewritten.group(1))
+
+                    m_query = re.search(r"[?&]page=(\d+)", href)
+                    if m_query and int(m_query.group(1)) > max_page:
+                        max_page = int(m_query.group(1))
+
+        self.max_page = max_page
 
         ts_min = 0
         ts_max = 0
 
         # Find all messages in the page
         message_tables = tree.xpath('//table[contains(@class, "messagetable")]')
-        for message_block in message_tables:
-            message = Message.from_lxml(self, message_block)
+        for idx, message_block in enumerate(message_tables, start=1):
+            message = Message.from_lxml(self, message_block, page=page, index_on_page=idx)
             if message:
                 self.add_message(message)
                 if ts_min == 0 or ts_min > message.posted_at:
@@ -122,7 +127,7 @@ class Topic:
                 f"Failed to fetch topic {self.cat}#{self.subcat}#{self.post} page {page}: HTTP {r.status_code}"
             )
 
-        return self.parse_page_html(r.text)
+        return self.parse_page_html(r.text, page=page)
 
     def has_date(self, msg_date: str | date | datetime) -> bool:
         return date_to_str(msg_date) in self.messages.keys()
