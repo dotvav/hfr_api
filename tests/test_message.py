@@ -16,6 +16,7 @@ def test_message_from_lxml_with_user_id():
                     <div class="left">Posté le 08-09-2026 à 23:45:10</div>
                     <div class="right">
                         <a href="/hfr/profil-301689.htm"><img src="/profil.gif" alt="Profil" /></a>
+                        <a href="/user/addflag.php?config=hfr.inc&cat=32&post=19&numreponse=48334&page=32&ref=5"><img src="/flag.gif" /></a>
                     </div>
                 </div>
                 <div id="para48334">
@@ -31,16 +32,18 @@ def test_message_from_lxml_with_user_id():
     assert str(msg.id) == "48334"
     assert msg.author == "Julian33"
     assert msg.user_id == 301689
+    assert msg.ref == 1245
     assert msg.text == "Bonsoir [:golemini]"
-    assert msg.quote() == "[quotemsg=48334,301689,0]Bonsoir [:golemini][/quotemsg]"
-    assert msg.quote("Extrait court") == "[quotemsg=48334,301689,0]Extrait court[/quotemsg]"
+    assert msg.quote() == "[quotemsg=48334,1245,301689]Bonsoir [:golemini][/quotemsg]"
+    assert msg.quote("Extrait court") == "[quotemsg=48334,1245,301689]Extrait court[/quotemsg]"
 
 
 def test_message_serialization():
     dt = datetime(2026, 9, 8, 23, 45, 10)
-    msg = Message(topic=None, id=48334, posted_at=dt, author="Julian33", text="Hello", user_id=301689)
+    msg = Message(topic=None, id=48334, posted_at=dt, author="Julian33", text="Hello", user_id=301689, ref=1245)
     d = msg.to_dict()
     assert d["user_id"] == 301689
+    assert d["ref"] == 1245
 
     restored = Message.from_dict(None, {
         "id": 48334,
@@ -48,6 +51,8 @@ def test_message_serialization():
         "author": "Julian33",
         "text": "Hello",
         "user_id": 301689,
+        "ref": 1245,
     })
     assert restored.user_id == 301689
-    assert restored.quote() == "[quotemsg=48334,301689,0]Hello[/quotemsg]"
+    assert restored.ref == 1245
+    assert restored.quote() == "[quotemsg=48334,1245,301689]Hello[/quotemsg]"

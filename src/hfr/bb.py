@@ -77,7 +77,7 @@ def convert_inline_tags(element, context: dict | None = None) -> str:
                 a = child.find(".//a")
                 href = (a.get("href") or "") if a is not None else ""
                 href_tokens = href.split("#t")
-                bb_details = f"={href_tokens[1] if len(href_tokens) > 1 else '0'},0,0"
+                bb_details = f"={href_tokens[1] if len(href_tokens) > 1 else '0'},1,0"
             else:
                 bb_tag = table_class
                 bb_details = ""
@@ -134,12 +134,12 @@ def html_to_bb(html_str: str) -> str:
 def format_quote(
     message_id: int | str,
     text: str,
+    ref: int = 1,
     user_id: int = 0,
-    parent_quote_id: int = 0,
 ) -> str:
-    """Construct an HFR [quotemsg] tag with specific message ID and user ID metadata."""
+    """Construct an HFR [quotemsg] tag with message ID, absolute ref, and user ID metadata."""
     clean_text = text.strip()
-    return f"[quotemsg={message_id},{user_id},{parent_quote_id}]{clean_text}[/quotemsg]"
+    return f"[quotemsg={message_id},{ref},{user_id}]{clean_text}[/quotemsg]"
 
 
 def format_author_quote(author: str, text: str) -> str:

@@ -38,7 +38,7 @@ def test_html_to_bb_advanced():
 <br />&nbsp;<br />De la couleur :
 <br />Texte <span style="color:#0000FF">bleu</span> et <span style="color:#FF0000">rouge</span><div style="clear: both;"> </div></p></div>"""
     expected = """Un quote qui contient du souligné:
-[quotemsg=1980038387,0,0][u]souligné[/u][/quotemsg]
+[quotemsg=1980038387,1,0][u]souligné[/u][/quotemsg]
 
 Une citation :
 [quote]Il fait chaud.[/quote]
@@ -63,11 +63,11 @@ Texte [#0000FF]bleu[/#0000FF] et [#FF0000]rouge[/#FF0000]"""
 
 
 def test_format_quote():
-    q = bb.format_quote(message_id=75205063, text="Test message", user_id=256366)
-    assert q == "[quotemsg=75205063,256366,0]Test message[/quotemsg]"
+    q = bb.format_quote(message_id=75205063, text="Test message", ref=1252, user_id=256366)
+    assert q == "[quotemsg=75205063,1252,256366]Test message[/quotemsg]"
 
     q_simple = bb.format_quote(message_id="12345", text="Coucou")
-    assert q_simple == "[quotemsg=12345,0,0]Coucou[/quotemsg]"
+    assert q_simple == "[quotemsg=12345,1,0]Coucou[/quotemsg]"
 
 
 def test_format_author_quote():

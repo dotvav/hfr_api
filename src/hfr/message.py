@@ -21,6 +21,7 @@ class Message:
         author: str,
         text: str,
         user_id: int = 0,
+        ref: int = 1,
     ) -> None:
         self.topic = topic
         self.id = id
@@ -28,6 +29,7 @@ class Message:
         self.author = author
         self.text = text
         self.user_id = user_id
+        self.ref = ref
 
     @classmethod
     def from_lxml(cls, topic: "Topic", element):
@@ -68,6 +70,23 @@ class Message:
                 user_id = int(m.group(1))
                 break
 
+        # Get absolute message ref in topic
+        ref = 1
+        addflag_links = element.xpath('.//a[contains(@href, "addflag.php")]')
+        if addflag_links:
+            href = addflag_links[0].get("href", "")
+            mpage = re.search(r"[?&]page=(\d+)", href)
+            mref = re.search(r"[?&]ref=(\d+)", href)
+            if mpage and mref:
+                ref = (int(mpage.group(1)) - 1) * 40 + int(mref.group(1))
+        else:
+            citer_links = element.xpath('.//a[contains(@href, "citer-")]')
+            if citer_links:
+                href = citer_links[0].get("href", "")
+                m = re.search(r"citer-\d+-\d+-(\d+)-(\d+)\.htm", href)
+                if m:
+                    ref = (int(m.group(1)) - 1) * 40 + int(m.group(2))
+
         # Get timestamp
         toolbar = case2.xpath('.//div[contains(@class, "toolbar")]')
         if not toolbar:
@@ -91,7 +110,7 @@ class Message:
 
         text = bb.html_to_bb(inner_html)
 
-        return cls(topic, id, posted_at, author, text, user_id=user_id)
+        return cls(topic, id, posted_at, author, text, user_id=user_id, ref=ref)
 
     @staticmethod
     def parse_timestamp(timestamp_str: str) -> datetime:
@@ -99,11 +118,17 @@ class Message:
         t = timestamp_str[22:30]
         return datetime.strptime(f"{d} {t}", "%d-%m-%Y %H:%M:%S")
 
-    def quote(self, text: str | None = None, user_id: int | None = None) -> str:
+    def quote(
+        self,
+        text: str | None = None,
+        ref: int | None = None,
+        user_id: int | None = None,
+    ) -> str:
         """Generate a formatted [quotemsg] tag for this message."""
         quote_text = text if text is not None else self.text
+        r = self.ref if ref is None else ref
         uid = self.user_id if user_id is None else user_id
-        return bb.format_quote(message_id=self.id, text=quote_text, user_id=uid)
+        return bb.format_quote(message_id=self.id, text=quote_text, ref=r, user_id=uid)
 
     def to_dict(self) -> dict:
         return {
@@ -112,6 +137,7 @@ class Message:
             "posted_at": str(self.posted_at),
             "text": self.text,
             "user_id": self.user_id,
+            "ref": self.ref,
         }
 
     @classmethod
@@ -123,4 +149,5 @@ class Message:
             data["author"],
             data["text"],
             user_id=data.get("user_id", 0),
+            ref=data.get("ref", 1),
         )
