@@ -1,5 +1,6 @@
 """An HFR message"""
 
+import copy
 from datetime import datetime
 import re
 from typing import TYPE_CHECKING
@@ -22,6 +23,8 @@ class Message:
         text: str,
         user_id: int = 0,
         ref: int = 1,
+        signature: str = "",
+        author_title: str = "",
     ) -> None:
         self.topic = topic
         self.id = id
@@ -30,6 +33,8 @@ class Message:
         self.text = text
         self.user_id = user_id
         self.ref = ref
+        self.signature = signature
+        self.author_title = author_title
 
     @classmethod
     def from_lxml(cls, topic: "Topic", element, page: int = 1, index_on_page: int = 1):
@@ -44,9 +49,17 @@ class Message:
         author_el = case1.xpath('.//b[contains(@class, "s2")]')
         if not author_el:
             return None
-        author = author_el[0].text_content().replace("\u200b", "")
+        author = author_el[0].text_content().replace("\u200b", "").strip()
         if author == "Publicité":
             return None
+
+        # Get author custom title / subtitle under pseudo if present
+        author_title = ""
+        case1_texts = [t.strip() for t in case1.xpath(".//text()") if t.strip()]
+        for t in case1_texts:
+            if t != author and not t.startswith("#") and not t.startswith("Publicité") and t != "Profil":
+                author_title = t
+                break
 
         # Get message id
         nofollow_links = case1.xpath('.//a[@rel="nofollow"]')
@@ -101,16 +114,54 @@ class Message:
         text_divs = case2.xpath(f'.//div[@id="para{id}"]')
         if not text_divs:
             return None
+
+        para_elem = copy.deepcopy(text_divs[0])
+
+        # Extract signature if present
+        signature = ""
+        sig_elements = para_elem.xpath('.//span[contains(@class, "signature")]')
+        if sig_elements:
+            sig_html = etree.tostring(sig_elements[0], encoding="unicode", method="html")
+            sig_inner_start = sig_html.find(">") + 1
+            sig_inner_end = sig_html.rfind("</span>")
+            sig_inner_html = sig_html[sig_inner_start:sig_inner_end] if sig_inner_end > sig_inner_start else ""
+            signature = bb.html_to_bb(sig_inner_html).strip()
+            signature = re.sub(r"^[-—\s]+", "", signature).strip()
+
+        # Remove signature, edit notices, and clear divs from message body
+        for sig in para_elem.xpath('.//span[contains(@class, "signature")]'):
+            parent = sig.getparent()
+            if parent is not None:
+                parent.remove(sig)
+        for ed in para_elem.xpath('.//div[contains(@class, "edited")]'):
+            parent = ed.getparent()
+            if parent is not None:
+                parent.remove(ed)
+        for cl in para_elem.xpath('.//div[contains(@style, "clear")]'):
+            parent = cl.getparent()
+            if parent is not None:
+                parent.remove(cl)
+
         # Get inner HTML of the div
-        text_html = etree.tostring(text_divs[0], encoding="unicode", method="html")
+        text_html = etree.tostring(para_elem, encoding="unicode", method="html")
         # Strip the outer div tags
         inner_start = text_html.find(">") + 1
         inner_end = text_html.rfind("</div>")
         inner_html = text_html[inner_start:inner_end] if inner_end > inner_start else ""
 
-        text = bb.html_to_bb(inner_html)
+        text = bb.html_to_bb(inner_html).strip()
 
-        return cls(topic, id, posted_at, author, text, user_id=user_id, ref=ref)
+        return cls(
+            topic,
+            id,
+            posted_at,
+            author,
+            text,
+            user_id=user_id,
+            ref=ref,
+            signature=signature,
+            author_title=author_title,
+        )
 
     @staticmethod
     def parse_timestamp(timestamp_str: str) -> datetime:
@@ -138,6 +189,8 @@ class Message:
             "text": self.text,
             "user_id": self.user_id,
             "ref": self.ref,
+            "signature": self.signature,
+            "author_title": self.author_title,
         }
 
     @classmethod
@@ -150,4 +203,6 @@ class Message:
             data["text"],
             user_id=data.get("user_id", 0),
             ref=data.get("ref", 1),
+            signature=data.get("signature", ""),
+            author_title=data.get("author_title", ""),
         )
