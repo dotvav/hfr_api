@@ -221,22 +221,38 @@ class HFRClient:
                 return topic.messages[date_key][str_id]
         return None
 
-    def get_post_form_tokens(self, cat: int | str, subcat: int | str, post: int) -> dict[str, str]:
+    def get_post_form_tokens(
+        self, cat: int | str, subcat: int | str, post: int, page: int | str | None = None
+    ) -> dict[str, str]:
         """Fetch hash_check, numrep, and form metadata required to submit a reply."""
         self.ensure_authenticated()
         cat_str = str(cat)
         subcat_str = str(subcat)
+
+        if page is not None:
+            target_page = str(page)
+        elif cat_str == "prive":
+            target_page = "1"
+        else:
+            try:
+                topic = self.get_topic_page(
+                    cat=int(cat_str), subcat=int(subcat_str), post=post, page=1
+                )
+                target_page = str(topic.max_page)
+            except Exception:
+                target_page = "1"
+
         resp = self.session.get(
-            f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&page=1"
+            f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&page={target_page}"
         )
         tree = lxml_html.fromstring(resp.text)
         form = tree.xpath('//form[contains(@action, "bddpost.php")]')
         tokens: dict[str, str] = {}
         if form:
-            for inp in form[0].xpath('.//input'):
+            for inp in form[0].xpath('.//input | .//textarea'):
                 name = inp.get("name")
                 if name:
-                    tokens[name] = inp.get("value") or ""
+                    tokens[name] = inp.get("value") or inp.text or ""
         else:
             hash_inputs = tree.xpath('//input[@name="hash_check"]')
             tokens["hash_check"] = hash_inputs[0].get("value") if hash_inputs else ""
@@ -260,18 +276,14 @@ class HFRClient:
 
         formatted_content = bb.emoji_to_cdn_bb(content)
         post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
-        payload = {
-            "action_form": "1",
-            "cat": str(cat),
-            "subcat": str(subcat),
-            "post": str(post),
-            "content_form": formatted_content,
-            "hash_check": tokens.get("hash_check", ""),
-            "numrep": tokens.get("numrep", ""),
-            "verifrequet": tokens.get("verifrequet", "1100"),
-            "signature": "1",
-            "verifform": "1",
-        }
+        payload = dict(tokens)
+        payload["content_form"] = formatted_content
+        payload["action_form"] = "1"
+        payload["cat"] = str(cat)
+        payload["subcat"] = str(subcat)
+        payload["post"] = str(post)
+        payload["signature"] = "1"
+        payload["verifform"] = "1"
 
         resp = self.session.post(
             post_url,
@@ -288,8 +300,40 @@ class HFRClient:
             if "Afin de prevenir les tentatives de flood" in body_text:
                 logger.error("Failed to post reply: HFR flood protection triggered (%s)", body_text.strip())
                 return False
-            if "Une erreur est survenue" in body_text or "Erreur" in body_text and "Retour" in body_text:
+            if "Une erreur est survenue" in body_text or ("Erreur" in body_text and "Retour" in body_text):
                 logger.error("Failed to post reply: HFR error page returned (%s)", body_text.strip()[:200])
+                return False
+
+            # Check if HFR rendered the intermediate confirmation page ("Un ou plusieurs messages ont été postés...")
+            intermediate_form = tree.xpath('//form[contains(@action, "bddpost.php")]')
+            if intermediate_form and ("messages ont été postés pendant que vous" in body_text or "Attention :" in body_text):
+                logger.info("Intermediate confirmation screen detected on topic %s#%s#%s; confirming post...", cat, subcat, post)
+                new_payload: dict[str, str] = {}
+                for inp in intermediate_form[0].xpath('.//input | .//textarea'):
+                    name = inp.get("name")
+                    if name:
+                        new_payload[name] = inp.get("value") or inp.text or ""
+                new_payload["content_form"] = formatted_content
+                new_payload["action_form"] = "1"
+                new_payload["signature"] = "1"
+                new_payload["verifform"] = "1"
+
+                resp2 = self.session.post(
+                    post_url,
+                    data=new_payload,
+                    headers={
+                        "Referer": f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat}&subcat={subcat}&post={post}"
+                    },
+                    allow_redirects=True,
+                )
+                if resp2.status_code in (200, 302):
+                    tree2 = lxml_html.fromstring(resp2.text)
+                    body2 = tree2.xpath("//body")[0].text_content() if tree2.xpath("//body") else resp2.text
+                    if "Afin de prevenir les tentatives de flood" in body2 or "Une erreur est survenue" in body2:
+                        logger.error("Failed to post reply on confirmation: %s", body2.strip()[:200])
+                        return False
+                    logger.info("Successfully posted reply after confirmation to topic %s#%s#%s", cat, subcat, post)
+                    return True
                 return False
 
             logger.info("Successfully posted reply to topic %s#%s#%s", cat, subcat, post)
