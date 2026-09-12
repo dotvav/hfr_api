@@ -1,7 +1,9 @@
 """Unit tests for HFRClient."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 import pytest
 
 from hfr.client import HFRClient, HFRPrivateMessage, SmileyResult
@@ -193,4 +195,52 @@ def test_hfr_client_get_smiley_keywords(mock_session):
     keywords = client.get_smiley_keywords("[:itm]")
     assert "cynique" in keywords
     assert "arrogant" in keywords
+
+
+def test_extract_user_id_from_html():
+    from hfr.client import extract_user_id_from_html
+
+    # Test flag reset link
+    html1 = '<a href="/forum1.php?config=hfr.inc&amp;reinit=1&amp;user=1215586">Réinitialiser</a>'
+    assert extract_user_id_from_html(html1) == 1215586
+
+    # Test mark read link
+    html2 = '<a href="/forum1.php?config=hfr.inc&marquer=1&user=1215586">Tout marquer</a>'
+    assert extract_user_id_from_html(html2) == 1215586
+
+    # Test profile link with username
+    html3 = '<a href="/hfr/profil-1215586.htm" class="cBackHeader">Golemini</a>'
+    assert extract_user_id_from_html(html3, username="Golemini") == 1215586
+
+    # Test hidden input in editprofil form
+    html4 = '<form><input type="hidden" name="user" value="1215586"></form>'
+    assert extract_user_id_from_html(html4) == 1215586
+
+    # Test unauthenticated/unrelated HTML
+    assert extract_user_id_from_html("<div>Pas d'id utilisateur</div>") == 0
+
+
+def test_client_user_id_property(mock_session, tmp_path: Path):
+    cookies_path = tmp_path / "cookies.json"
+    cookies_path.write_text(json.dumps({"md_id": "1215586", "md_user": "Golemini"}))
+
+    client = HFRClient(username="Golemini", password="pwd", cookies_path=cookies_path)
+    assert client.user_id == 1215586
+
+
+def test_client_user_id_html_fallback(mock_session):
+    client = HFRClient(username="Golemini", password="pwd")
+    mock_resp = MagicMock(status_code=200, text='<a href="/forum1.php?config=hfr.inc&amp;reinit=1&amp;user=1215586">Reset</a>')
+    mock_session.get.return_value = mock_resp
+    assert client.user_id == 1215586
+
+
+def test_load_cookies_stale_user_purged(tmp_path: Path):
+    cookies_path = tmp_path / "cookies.json"
+    cookies_path.write_text(json.dumps({"md_user": "OldUser", "md_passs": "secret"}))
+
+    # Initializing with different user should purge stale cookie file
+    client = HFRClient(username="NewUser", password="pwd", cookies_path=cookies_path)
+    assert not cookies_path.exists()
+
 

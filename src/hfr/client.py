@@ -2,11 +2,12 @@
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 from curl_cffi import requests as cffi_requests
 from lxml import html as lxml_html
@@ -16,6 +17,54 @@ from .message import Message
 from .topic import Topic
 
 logger = logging.getLogger(__name__)
+
+
+def extract_user_id_from_html(html: str, username: str = "") -> int:
+    """Extract numeric user ID from HFR page HTML."""
+    if not html:
+        return 0
+    # 1. Check flag reset or mark read links containing user=ID
+    patterns = [
+        r"reinit=1(?:&amp;|&)user=(\d+)",
+        r"marquer=1(?:&amp;|&)user=(\d+)",
+        r"href=[\"'][^\"']*(?:reinit|marquer)=1[^\"']*user=(\d+)",
+        r"user/editprofil\.php\?config=hfr\.inc(?:&amp;|&)user=(\d+)",
+        r"<input[^>]+name=[\"'](?:user|id_user|num_user)[\"'][^>]+value=[\"'](\d+)[\"']",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, html, re.IGNORECASE)
+        if m:
+            try:
+                uid = int(m.group(1))
+                if uid > 0:
+                    return uid
+            except ValueError:
+                pass
+
+    # 2. If username provided, search for link to their profile: href=".../profil-<id>.htm" with username text
+    if username:
+        escaped_user = re.escape(username)
+        user_pattern = rf"profil-(\d+)\.htm[^>]*>[^<]*{escaped_user}"
+        m = re.search(user_pattern, html, re.IGNORECASE)
+        if m:
+            try:
+                uid = int(m.group(1))
+                if uid > 0:
+                    return uid
+            except ValueError:
+                pass
+
+    # 3. Fallback: generic profil-<id>.htm if single match or in user header
+    generic_profil = re.search(r"href=[\"'][^\"']*/hfr/profil-(\d+)\.htm", html, re.IGNORECASE)
+    if generic_profil:
+        try:
+            uid = int(generic_profil.group(1))
+            if uid > 0:
+                return uid
+        except ValueError:
+            pass
+
+    return 0
 
 
 @dataclass
@@ -64,6 +113,42 @@ class HFRClient:
         if self.cookies_path and self.cookies_path.exists():
             self.load_cookies()
 
+    @property
+    def user_id(self) -> int:
+        """Return numeric user ID of authenticated user, extracting from cookies or HTML."""
+        cookie_id = self.session.cookies.get("md_id")
+        if cookie_id and str(cookie_id).isdigit() and int(cookie_id) > 0:
+            return int(cookie_id)
+
+        if self.cookies_path and self.cookies_path.exists():
+            try:
+                with open(self.cookies_path, encoding="utf-8") as f:
+                    data = json.load(f)
+                cid = data.get("md_id")
+                if cid and str(cid).isdigit() and int(cid) > 0:
+                    uid = int(cid)
+                    self.session.cookies.set("md_id", str(uid), domain=".hardware.fr")
+                    return uid
+            except Exception:
+                pass
+
+        try:
+            resp = self.session.get(f"{self.base_url}/forum1.php?config=hfr.inc")
+            if resp.status_code == 200:
+                uid = extract_user_id_from_html(resp.text, username=self.username)
+                if uid > 0:
+                    self.session.cookies.set("md_id", str(uid), domain=".hardware.fr")
+                    if self.cookies_path:
+                        try:
+                            self.save_cookies()
+                        except Exception:
+                            pass
+                    return uid
+        except Exception as e:
+            logger.debug("Failed to resolve user_id via HTML: %s", e)
+
+        return 0
+
     def save_cookies(self) -> None:
         """Save session cookies to disk."""
         if not self.cookies_path:
@@ -75,14 +160,27 @@ class HFRClient:
         logger.debug("HFR session cookies saved to %s", self.cookies_path)
 
     def load_cookies(self) -> None:
-        """Load session cookies from disk."""
+        """Load session cookies from disk, purging if belonging to a different username."""
         if not self.cookies_path or not self.cookies_path.exists():
             return
         try:
-            with open(self.cookies_path, "r", encoding="utf-8") as f:
+            with open(self.cookies_path, encoding="utf-8") as f:
                 cookie_dict = json.load(f)
-                for k, v in cookie_dict.items():
-                    self.session.cookies.set(k, v, domain=".hardware.fr")
+
+            if self.username:
+                cookie_user = unquote_plus(str(cookie_dict.get("md_user", ""))).strip()
+                if cookie_user and cookie_user.lower() != self.username.strip().lower():
+                    logger.warning(
+                        "Stale HFR session cookie detected for user '%s' (configured username: '%s'). Purging %s",
+                        cookie_user,
+                        self.username,
+                        self.cookies_path,
+                    )
+                    self.cookies_path.unlink(missing_ok=True)
+                    return
+
+            for k, v in cookie_dict.items():
+                self.session.cookies.set(k, v, domain=".hardware.fr")
             logger.debug("HFR session cookies loaded from %s", self.cookies_path)
         except Exception as e:
             logger.warning("Failed to load cookies from %s: %s", self.cookies_path, e)
