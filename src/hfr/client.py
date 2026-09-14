@@ -103,15 +103,28 @@ class HFRClient:
             user_agent
             or "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
         )
-        self.session = cffi_requests.Session(impersonate="chrome124")
-        self.session.headers.update(
+        self.session = self._create_session()
+        if self.cookies_path and self.cookies_path.exists():
+            self.load_cookies()
+
+    def _create_session(self) -> cffi_requests.Session:
+        """Create and configure a new curl_cffi session."""
+        session = cffi_requests.Session(impersonate="chrome124")
+        session.headers.update(
             {
                 "User-Agent": self.user_agent,
                 "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
             }
         )
-        if self.cookies_path and self.cookies_path.exists():
-            self.load_cookies()
+        return session
+
+    def reset_session(self) -> None:
+        """Reset curl_cffi session to clear dropped/stale keep-alive connections while preserving cookies."""
+        old_cookies = dict(self.session.cookies) if hasattr(self, "session") else {}
+        self.session = self._create_session()
+        for k, v in old_cookies.items():
+            self.session.cookies.set(k, v, domain=".hardware.fr")
+        logger.debug("HFR curl_cffi session refreshed (socket pool reset).")
 
     @property
     def user_id(self) -> int:
@@ -185,7 +198,7 @@ class HFRClient:
         except Exception as e:
             logger.warning("Failed to load cookies from %s: %s", self.cookies_path, e)
 
-    def is_logged_in(self) -> bool:
+    def is_logged_in(self, retry_on_error: bool = True) -> bool:
         """Check if current session is authenticated by verifying access to private messages."""
         try:
             resp = self.session.get(f"{self.base_url}/forum1.php?config=hfr.inc&cat=prive")
@@ -196,7 +209,11 @@ class HFRClient:
             has_denied = "ne faites pas partie des membres" in resp.text or "non autoris" in resp.text.lower()
             return has_mp_title and not has_denied
         except Exception as e:
-            logger.error("Error verifying login status: %s", e)
+            logger.warning("Error verifying login status (connection issue): %s", e)
+            if retry_on_error:
+                logger.info("Resetting session and retrying is_logged_in...")
+                self.reset_session()
+                return self.is_logged_in(retry_on_error=False)
             return False
 
     def login(self, force: bool = False) -> bool:
@@ -208,6 +225,9 @@ class HFRClient:
         if not self.username or not self.password:
             logger.warning("HFR credentials not provided; proceeding in read-only mode.")
             return False
+
+        # Reset session to ensure fresh socket before submitting login credentials
+        self.reset_session()
 
         validation_url = f"{self.base_url}/login_validation.php?config=hfr.inc"
         data = {
@@ -340,9 +360,16 @@ class HFRClient:
             except Exception:
                 target_page = "1"
 
-        resp = self.session.get(
-            f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&page={target_page}"
-        )
+        try:
+            resp = self.session.get(
+                f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&page={target_page}"
+            )
+        except Exception as e:
+            logger.warning("Error fetching post form tokens: %s. Resetting session and retrying...", e)
+            self.reset_session()
+            resp = self.session.get(
+                f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&page={target_page}"
+            )
         tree = lxml_html.fromstring(resp.text)
         form = tree.xpath('//form[contains(@action, "bddpost.php")]')
         tokens: dict[str, str] = {}

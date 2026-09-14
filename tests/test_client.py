@@ -244,3 +244,29 @@ def test_load_cookies_stale_user_purged(tmp_path: Path):
     assert not cookies_path.exists()
 
 
+def test_reset_session(mock_session):
+    client = HFRClient(username="Golemini", password="pwd")
+    client.session.cookies = {"md_id": "123"}
+    first_session = client.session
+
+    with patch("hfr.client.cffi_requests.Session") as mock_new_session_cls:
+        new_session = MagicMock()
+        mock_new_session_cls.return_value = new_session
+        client.reset_session()
+        assert client.session is not first_session
+        new_session.cookies.set.assert_called_with("md_id", "123", domain=".hardware.fr")
+
+
+def test_is_logged_in_retry_on_connection_error(mock_session):
+    client = HFRClient(username="Golemini", password="pwd")
+    # First call raises connection error, second call succeeds after reset_session
+    mock_session.get.side_effect = [
+        Exception("SSL connection reset by peer"),
+        MagicMock(status_code=200, text="<title>Messages privés - FORUM HardWare.fr</title>"),
+    ]
+    with patch.object(client, "reset_session") as mock_reset:
+        assert client.is_logged_in() is True
+        mock_reset.assert_called_once()
+
+
+
