@@ -1,7 +1,10 @@
 """BB code handling"""
 
+from typing import Any, Callable, Optional, Union
+
 from lxml import html as lxml_html
-from lxml import etree
+
+UserResolver = Union[dict[str, int], Callable[[str], Optional[int]]]
 
 
 def convert_inline_tags(element, context: dict | None = None) -> str:
@@ -71,13 +74,52 @@ def convert_inline_tags(element, context: dict | None = None) -> str:
         elif tag == "table":
             classes = (child.get("class") or "").split()
             table_class = classes[0] if classes else ""
-            new_context = {"table_class": table_class}
+            new_context = {
+                "table_class": table_class,
+                "user_resolver": context.get("user_resolver"),
+            }
             if "citation" in table_class:
-                bb_tag = "quotemsg"
                 a = child.find(".//a")
                 href = (a.get("href") or "") if a is not None else ""
                 href_tokens = href.split("#t")
-                bb_details = f"={href_tokens[1] if len(href_tokens) > 1 else '0'},1,0"
+                msg_id_str = href_tokens[1] if len(href_tokens) > 1 else ""
+
+                # Extract author pseudo from <b class="s1">
+                b_elem = child.find(".//b")
+                author_name = ""
+                if b_elem is not None:
+                    b_text = b_elem.text_content().strip()
+                    m = re.search(r"^(.*?)\s+a écrit\s*:", b_text)
+                    if m:
+                        author_name = m.group(1).strip()
+                    elif b_text and not b_text.startswith("Citation"):
+                        author_name = b_text
+
+                # Resolve user_id if author_name is known
+                user_id = 0
+                resolver = context.get("user_resolver")
+                if author_name and resolver:
+                    try:
+                        if callable(resolver):
+                            res = resolver(author_name)
+                        elif isinstance(resolver, dict):
+                            res = resolver.get(author_name) or resolver.get(author_name.lower())
+                        else:
+                            res = None
+                        if res and str(res).isdigit():
+                            user_id = int(res)
+                    except Exception:
+                        user_id = 0
+
+                if msg_id_str and msg_id_str.isdigit() and int(msg_id_str) > 0:
+                    bb_tag = "quotemsg"
+                    bb_details = f"={msg_id_str},1,{user_id}"
+                elif author_name:
+                    bb_tag = "quote"
+                    bb_details = f"={author_name}"
+                else:
+                    bb_tag = "quotemsg"
+                    bb_details = "=0,1,0"
             else:
                 bb_tag = table_class
                 bb_details = ""
@@ -116,8 +158,11 @@ def convert_inline_tags(element, context: dict | None = None) -> str:
     return "".join(result)
 
 
-def html_to_bb(html_str: str) -> str:
-    """Convert HTML string to BB code."""
+def html_to_bb(
+    html_str: str,
+    user_resolver: Optional[UserResolver] = None,
+) -> str:
+    """Convert HTML string to BB code with optional username -> user_id resolution for quotes."""
     cleaned = (
         html_str.replace("&nbsp;", "")
         .replace("\n", "")
@@ -128,7 +173,8 @@ def html_to_bb(html_str: str) -> str:
     # Wrap in a root element for lxml parsing
     wrapped = f"<div>{cleaned}</div>"
     root = lxml_html.fragment_fromstring(wrapped, create_parent=False)
-    return convert_inline_tags(root).strip()
+    context = {"user_resolver": user_resolver} if user_resolver else None
+    return convert_inline_tags(root, context=context).strip()
 
 
 def format_quote(

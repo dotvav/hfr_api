@@ -84,3 +84,31 @@ def test_emoji_to_cdn_bb():
     assert bb.emoji_to_cdn_bb("👨‍💻") == "[img]https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/1f468-200d-1f4bb.png[/img]"
     # Plain text untouched
     assert bb.emoji_to_cdn_bb("Texte sans emoji") == "Texte sans emoji"
+
+
+def test_html_to_bb_with_user_resolver():
+    html_input = """<div class="container"><table class="citation"><tr class="none"><td><b class="s1"><a href="/forum2.php?...#t1980038387" class="Topic">Golemini a écrit :</a></b><br /><br /><p>Coucou robot<br /></p></td></tr></table></div>"""
+
+    # 1. Dict resolver
+    res1 = bb.html_to_bb(html_input, user_resolver={"Golemini": 1215586})
+    assert res1 == "[quotemsg=1980038387,1,1215586]Coucou robot[/quotemsg]"
+
+    # 2. Callable resolver
+    def my_resolver(pseudo: str):
+        if pseudo.lower() == "golemini":
+            return 1215586
+        return 0
+
+    res2 = bb.html_to_bb(html_input, user_resolver=my_resolver)
+    assert res2 == "[quotemsg=1980038387,1,1215586]Coucou robot[/quotemsg]"
+
+    # 3. Unknown user defaults to 0
+    res3 = bb.html_to_bb(html_input, user_resolver={"Other": 999})
+    assert res3 == "[quotemsg=1980038387,1,0]Coucou robot[/quotemsg]"
+
+
+def test_html_to_bb_author_quote_without_msg_id():
+    html_input = """<div class="container"><table class="citation"><tr class="none"><td><b class="s1">Golemini a écrit :</b><br /><br /><p>Citation nommée manuelle</p></td></tr></table></div>"""
+    res = bb.html_to_bb(html_input)
+    assert res == "[quote=Golemini]Citation nommée manuelle[/quote]"
+

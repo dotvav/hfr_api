@@ -116,3 +116,61 @@ def test_message_serialization():
     assert restored.author_title == "Member"
     assert restored.quote() == "[quotemsg=48334,1245,301689]Hello[/quotemsg]"
 
+
+def test_topic_parse_page_html_with_user_resolver():
+    from hfr.topic import Topic
+
+    html_page = """
+    <html>
+      <head><h3>Le topic des agents IA</h3></head>
+      <body>
+        <table class="messagetable">
+          <tr>
+            <td class="messCase1">
+              <b class="s2">Golemini</b>
+              <a rel="nofollow" href="#t100">#100</a>
+            </td>
+            <td class="messCase2">
+              <div class="toolbar">
+                <div class="left">Posté le 14-09-2026 à 10:00:00</div>
+                <div class="right"><a href="/hfr/profil-1215586.htm"><img src="/profil.gif" /></a></div>
+              </div>
+              <div id="para100">Je suis un agent IA.</div>
+            </td>
+          </tr>
+        </table>
+        <table class="messagetable">
+          <tr>
+            <td class="messCase1">
+              <b class="s2">UserB</b>
+              <a rel="nofollow" href="#t101">#101</a>
+            </td>
+            <td class="messCase2">
+              <div class="toolbar">
+                <div class="left">Posté le 14-09-2026 à 10:05:00</div>
+                <div class="right"><a href="/hfr/profil-999.htm"><img src="/profil.gif" /></a></div>
+              </div>
+              <div id="para101">
+                <div class="container">
+                  <table class="citation">
+                    <tr><td><b class="s1"><a href="#t100">Golemini a écrit :</a></b><p>Je suis un agent IA.</p></td></tr>
+                  </table>
+                </div>
+                Bienvenue à toi !
+              </div>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+    topic = Topic(cat=32, subcat=0, post=19)
+    topic.parse_page_html(html_page, page=1)
+
+    # Message 101 should have resolved Golemini's user_id (1215586) automatically from page!
+    msgs = [m for d in topic.messages.values() for m in d.values()]
+    assert len(msgs) == 2
+    msg101 = msgs[1]
+    assert "[quotemsg=100,1,1215586]Je suis un agent IA.[/quotemsg]" in msg101.text
+
+

@@ -3,7 +3,7 @@
 import copy
 from datetime import datetime
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from lxml import etree
 
@@ -37,7 +37,14 @@ class Message:
         self.author_title = author_title
 
     @classmethod
-    def from_lxml(cls, topic: "Topic", element, page: int = 1, index_on_page: int = 1):
+    def from_lxml(
+        cls,
+        topic: "Topic",
+        element,
+        page: int = 1,
+        index_on_page: int = 1,
+        user_resolver: Optional[bb.UserResolver] = None,
+    ):
         """Parse a message from an lxml element (table.messagetable)."""
         # Find messCase1 td
         case1_list = element.xpath('.//td[contains(@class, "messCase1")]')
@@ -125,7 +132,7 @@ class Message:
             sig_inner_start = sig_html.find(">") + 1
             sig_inner_end = sig_html.rfind("</span>")
             sig_inner_html = sig_html[sig_inner_start:sig_inner_end] if sig_inner_end > sig_inner_start else ""
-            signature = bb.html_to_bb(sig_inner_html).strip()
+            signature = bb.html_to_bb(sig_inner_html, user_resolver=user_resolver).strip()
             signature = re.sub(r"^[-—\s]+", "", signature).strip()
 
         # Remove signature, edit notices, and clear divs from message body
@@ -149,7 +156,7 @@ class Message:
         inner_end = text_html.rfind("</div>")
         inner_html = text_html[inner_start:inner_end] if inner_end > inner_start else ""
 
-        text = bb.html_to_bb(inner_html).strip()
+        text = bb.html_to_bb(inner_html, user_resolver=user_resolver).strip()
 
         return cls(
             topic,

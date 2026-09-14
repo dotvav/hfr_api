@@ -10,6 +10,7 @@ import requests
 from lxml import html as lxml_html
 from sortedcontainers import SortedDict
 
+from . import bb
 from .message import Message
 
 logger = logging.getLogger()
@@ -49,7 +50,12 @@ class Topic:
     def id(self) -> str:
         return f"{self.cat}#{self.subcat}#{self.post}"
 
-    def parse_page_html(self, html_text: str, page: int = 1) -> dict:
+    def parse_page_html(
+        self,
+        html_text: str,
+        page: int = 1,
+        user_resolver: Optional[bb.UserResolver] = None,
+    ) -> dict:
         tree = lxml_html.fromstring(html_text)
 
         # Get title
@@ -84,8 +90,57 @@ class Topic:
 
         # Find all messages in the page
         message_tables = tree.xpath('//table[contains(@class, "messagetable")]')
+
+        # Pre-scan page to extract local mapping {author: user_id}
+        page_users: dict[str, int] = {}
+        for block in message_tables:
+            author_el = block.xpath('.//td[contains(@class, "messCase1")]//b[contains(@class, "s2")]')
+            if not author_el:
+                continue
+            author_name = author_el[0].text_content().replace("\u200b", "").strip()
+            if not author_name or author_name == "Publicité":
+                continue
+            profil_links = block.xpath('.//a[contains(@href, "profil-")]')
+            for pl in profil_links:
+                href = pl.get("href", "")
+                m = re.search(r"profil-(\d+)\.htm", href)
+                if m:
+                    try:
+                        uid = int(m.group(1))
+                        if uid > 0:
+                            page_users[author_name] = uid
+                            page_users[author_name.lower()] = uid
+                            break
+                    except ValueError:
+                        pass
+
+        def _combined_resolver(pseudo: str) -> Optional[int]:
+            if pseudo in page_users:
+                return page_users[pseudo]
+            if pseudo.lower() in page_users:
+                return page_users[pseudo.lower()]
+            if user_resolver:
+                try:
+                    if callable(user_resolver):
+                        res = user_resolver(pseudo)
+                    elif isinstance(user_resolver, dict):
+                        res = user_resolver.get(pseudo) or user_resolver.get(pseudo.lower())
+                    else:
+                        res = None
+                    if res and str(res).isdigit():
+                        return int(res)
+                except Exception:
+                    pass
+            return 0
+
         for idx, message_block in enumerate(message_tables, start=1):
-            message = Message.from_lxml(self, message_block, page=page, index_on_page=idx)
+            message = Message.from_lxml(
+                self,
+                message_block,
+                page=page,
+                index_on_page=idx,
+                user_resolver=_combined_resolver,
+            )
             if message:
                 self.add_message(message)
                 if ts_min == 0 or ts_min > message.posted_at:
@@ -108,7 +163,12 @@ class Topic:
             self.messages[msg_date] = messages_for_date
         messages_for_date[message.id] = message
 
-    def load_page(self, page: int, session: Optional[Any] = None) -> dict:
+    def load_page(
+        self,
+        page: int,
+        session: Optional[Any] = None,
+        user_resolver: Optional[bb.UserResolver] = None,
+    ) -> dict:
         url = f"https://forum.hardware.fr/forum2.php?config=hfr.inc&cat={self.cat}&subcat={self.subcat}&post={self.post}&page={page}"
         headers = {
             "Accept": "text/html",
@@ -127,7 +187,7 @@ class Topic:
                 f"Failed to fetch topic {self.cat}#{self.subcat}#{self.post} page {page}: HTTP {r.status_code}"
             )
 
-        return self.parse_page_html(r.text, page=page)
+        return self.parse_page_html(r.text, page=page, user_resolver=user_resolver)
 
     def has_date(self, msg_date: str | date | datetime) -> bool:
         return date_to_str(msg_date) in self.messages.keys()

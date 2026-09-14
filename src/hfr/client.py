@@ -94,6 +94,7 @@ class HFRClient:
         cookies_path: Optional[Path] = None,
         base_url: str = "https://forum.hardware.fr",
         user_agent: Optional[str] = None,
+        user_resolver: Optional[bb.UserResolver] = None,
     ) -> None:
         self.username = username
         self.password = password
@@ -103,6 +104,7 @@ class HFRClient:
             user_agent
             or "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
         )
+        self.user_resolver = user_resolver
         self.session = self._create_session()
         if self.cookies_path and self.cookies_path.exists():
             self.load_cookies()
@@ -289,21 +291,42 @@ class HFRClient:
             if not self.login(force=True):
                 raise RuntimeError("HFR Authentication failed.")
 
-    def get_topic_page(self, cat: int, subcat: int, post: int, page: int = 1) -> Topic:
+    def get_topic_page(
+        self,
+        cat: int,
+        subcat: int,
+        post: int,
+        page: int = 1,
+        user_resolver: Optional[bb.UserResolver] = None,
+    ) -> Topic:
         """Fetch and parse a specific topic page."""
         topic = Topic(cat=cat, subcat=subcat, post=post)
-        topic.load_page(page=page, session=self.session)
+        topic.load_page(
+            page=page,
+            session=self.session,
+            user_resolver=user_resolver or self.user_resolver,
+        )
         return topic
 
     def get_latest_topic_messages(
-        self, cat: int, subcat: int, post: int, last_seen_msg_id: Optional[int] = None
+        self,
+        cat: int,
+        subcat: int,
+        post: int,
+        last_seen_msg_id: Optional[int] = None,
+        user_resolver: Optional[bb.UserResolver] = None,
     ) -> list[Message]:
         """Fetch latest messages from a topic, optionally filtering by last_seen_msg_id."""
-        topic = self.get_topic_page(cat=cat, subcat=subcat, post=post, page=1)
+        resolver = user_resolver or self.user_resolver
+        topic = self.get_topic_page(
+            cat=cat, subcat=subcat, post=post, page=1, user_resolver=resolver
+        )
         target_page = topic.max_page if topic.max_page > 0 else 1
 
         if target_page != 1:
-            topic = self.get_topic_page(cat=cat, subcat=subcat, post=post, page=target_page)
+            topic = self.get_topic_page(
+                cat=cat, subcat=subcat, post=post, page=target_page, user_resolver=resolver
+            )
 
         messages: list[Message] = []
         for date_key in sorted(topic.messages.keys()):
@@ -317,7 +340,12 @@ class HFRClient:
         return messages
 
     def get_post_by_id(
-        self, cat: int | str, subcat: int | str, post: int, msg_id: int
+        self,
+        cat: int | str,
+        subcat: int | str,
+        post: int,
+        msg_id: int,
+        user_resolver: Optional[bb.UserResolver] = None,
     ) -> Optional[Message]:
         """Directly fetch the message and its surrounding page using MesDiscussions numreponse."""
         self.ensure_authenticated()
@@ -329,8 +357,14 @@ class HFRClient:
             logger.error("Failed to fetch message #%s on topic %s: HTTP %s", msg_id, post, resp.status_code)
             return None
 
-        topic = Topic(cat=int(cat) if str(cat).isdigit() else 0, subcat=int(subcat) if str(subcat).isdigit() else 0, post=post)
-        topic.parse_page_html(resp.text)
+        topic = Topic(
+            cat=int(cat) if str(cat).isdigit() else 0,
+            subcat=int(subcat) if str(subcat).isdigit() else 0,
+            post=post,
+        )
+        topic.parse_page_html(
+            resp.text, user_resolver=user_resolver or self.user_resolver
+        )
 
         # Lookup message by exact ID in parsed page
         str_id = str(msg_id)
@@ -529,7 +563,12 @@ class HFRClient:
             )
         return results
 
-    def get_mp_page(self, mp_id: int, page: int = 1) -> Topic:
+    def get_mp_page(
+        self,
+        mp_id: int,
+        page: int = 1,
+        user_resolver: Optional[bb.UserResolver] = None,
+    ) -> Topic:
         """Fetch and parse a private message thread."""
         self.ensure_authenticated()
         url = f"{self.base_url}/forum2.php?config=hfr.inc&cat=prive&post={mp_id}&page={page}"
@@ -538,7 +577,9 @@ class HFRClient:
             raise RuntimeError(f"Failed to fetch MP thread {mp_id} page {page}: HTTP {resp.status_code}")
 
         topic = Topic(cat=0, subcat=0, post=mp_id)
-        topic.parse_page_html(resp.text)
+        topic.parse_page_html(
+            resp.text, user_resolver=user_resolver or self.user_resolver
+        )
         return topic
 
     def post_mp_reply(
