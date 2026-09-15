@@ -269,4 +269,35 @@ def test_is_logged_in_retry_on_connection_error(mock_session):
         mock_reset.assert_called_once()
 
 
+def test_get_topic_page_retry_on_connection_drop(mock_session):
+    client = HFRClient(username="Golemini", password="pwd", initial_backoff=0.01, max_retries=3)
+    mock_session.get.side_effect = [
+        Exception("curl: (35) BoringSSL SSL_connect: Connection closed abruptly"),
+        MagicMock(
+            status_code=200,
+            text="<html><body><h3>Mon Topic</h3><table class='messagetable'></table></body></html>",
+        ),
+    ]
+    with patch.object(client, "reset_session") as mock_reset:
+        topic = client.get_topic_page(cat=13, subcat=430, post=1234, page=1)
+        assert topic.title == "Mon Topic"
+        assert mock_reset.call_count == 1
+        assert mock_session.get.call_count == 2
+
+
+def test_list_mps_retry_on_timeout(mock_session):
+    client = HFRClient(username="Golemini", password="pwd", initial_backoff=0.01, max_retries=3)
+    mock_session.get.side_effect = [
+        MagicMock(status_code=200, text="<title>Messages privés - FORUM HardWare.fr</title>"),  # is_logged_in
+        Exception("curl: (28) Timeout"),  # list_mps first try
+        MagicMock(status_code=200, text="<title>Messages privés - FORUM HardWare.fr</title>"),  # is_logged_in on retry
+        MagicMock(status_code=200, text="<html><body><table class='main'></table></body></html>"),  # list_mps retry
+    ]
+    with patch.object(client, "reset_session") as mock_reset:
+        mps = client.list_mps(page=1)
+        assert mps == []
+        assert mock_reset.call_count == 1
+
+
+
 

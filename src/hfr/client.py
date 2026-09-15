@@ -3,10 +3,11 @@
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, unquote_plus, urlparse
 
 from curl_cffi import requests as cffi_requests
@@ -95,6 +96,8 @@ class HFRClient:
         base_url: str = "https://forum.hardware.fr",
         user_agent: Optional[str] = None,
         user_resolver: Optional[bb.UserResolver] = None,
+        max_retries: int = 3,
+        initial_backoff: float = 0.5,
     ) -> None:
         self.username = username
         self.password = password
@@ -105,6 +108,8 @@ class HFRClient:
             or "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
         )
         self.user_resolver = user_resolver
+        self.max_retries = max_retries
+        self.initial_backoff = initial_backoff
         self.session = self._create_session()
         if self.cookies_path and self.cookies_path.exists():
             self.load_cookies()
@@ -127,6 +132,47 @@ class HFRClient:
         for k, v in old_cookies.items():
             self.session.cookies.set(k, v, domain=".hardware.fr")
         logger.debug("HFR curl_cffi session refreshed (socket pool reset).")
+
+    def _execute_with_retry(
+        self,
+        func: Callable[..., Any],
+        *args: Any,
+        op_name: str = "HFR request",
+        **kwargs: Any,
+    ) -> Any:
+        """Execute an operation with transparent session reset and exponential backoff retry on network failure."""
+        last_exception: Optional[Exception] = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_exception = e
+                if attempt == self.max_retries:
+                    logger.error(
+                        "[%s] Failed after %d attempts: %s",
+                        op_name,
+                        self.max_retries,
+                        e,
+                    )
+                    raise
+                logger.warning(
+                    "[%s] Attempt %d/%d failed: %s. Refreshing session and retrying...",
+                    op_name,
+                    attempt,
+                    self.max_retries,
+                    e,
+                )
+                try:
+                    self.reset_session()
+                except Exception as reset_err:
+                    logger.debug("[%s] Failed to reset session: %s", op_name, reset_err)
+
+                sleep_time = self.initial_backoff * (2 ** (attempt - 1))
+                time.sleep(sleep_time)
+
+        if last_exception:
+            raise last_exception
+        raise RuntimeError(f"[{op_name}] Failed with unknown error")
 
     @property
     def user_id(self) -> int:
@@ -300,13 +346,19 @@ class HFRClient:
         user_resolver: Optional[bb.UserResolver] = None,
     ) -> Topic:
         """Fetch and parse a specific topic page."""
-        topic = Topic(cat=cat, subcat=subcat, post=post)
-        topic.load_page(
-            page=page,
-            session=self.session,
-            user_resolver=user_resolver or self.user_resolver,
+        def _fetch() -> Topic:
+            topic = Topic(cat=cat, subcat=subcat, post=post)
+            topic.load_page(
+                page=page,
+                session=self.session,
+                user_resolver=user_resolver or self.user_resolver,
+            )
+            return topic
+
+        return self._execute_with_retry(
+            _fetch,
+            op_name=f"get_topic_page({cat}#{subcat}#{post} p.{page})",
         )
-        return topic
 
     def get_latest_topic_messages(
         self,
@@ -348,74 +400,114 @@ class HFRClient:
         user_resolver: Optional[bb.UserResolver] = None,
     ) -> Optional[Message]:
         """Directly fetch the message and its surrounding page using MesDiscussions numreponse."""
-        self.ensure_authenticated()
-        cat_str = str(cat)
-        subcat_str = str(subcat)
-        url = f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&numreponse={msg_id}"
-        resp = self.session.get(url, allow_redirects=True)
-        if resp.status_code != 200:
-            logger.error("Failed to fetch message #%s on topic %s: HTTP %s", msg_id, post, resp.status_code)
+        def _fetch() -> Optional[Message]:
+            self.ensure_authenticated()
+            cat_str = str(cat)
+            subcat_str = str(subcat)
+            url = f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&numreponse={msg_id}"
+            resp = self.session.get(url, allow_redirects=True)
+            if resp.status_code != 200:
+                logger.error("Failed to fetch message #%s on topic %s: HTTP %s", msg_id, post, resp.status_code)
+                return None
+
+            topic = Topic(
+                cat=int(cat) if str(cat).isdigit() else 0,
+                subcat=int(subcat) if str(subcat).isdigit() else 0,
+                post=post,
+            )
+            topic.parse_page_html(
+                resp.text, user_resolver=user_resolver or self.user_resolver
+            )
+
+            # Lookup message by exact ID in parsed page
+            str_id = str(msg_id)
+            for date_key in topic.messages:
+                if str_id in topic.messages[date_key]:
+                    return topic.messages[date_key][str_id]
             return None
 
-        topic = Topic(
-            cat=int(cat) if str(cat).isdigit() else 0,
-            subcat=int(subcat) if str(subcat).isdigit() else 0,
-            post=post,
-        )
-        topic.parse_page_html(
-            resp.text, user_resolver=user_resolver or self.user_resolver
+        return self._execute_with_retry(
+            _fetch,
+            op_name=f"get_post_by_id({cat}#{subcat}#{post} msg {msg_id})",
         )
 
-        # Lookup message by exact ID in parsed page
-        str_id = str(msg_id)
-        for date_key in topic.messages:
-            if str_id in topic.messages[date_key]:
-                return topic.messages[date_key][str_id]
-        return None
+    def get_quote_chain(
+        self,
+        cat: int | str,
+        subcat: int | str,
+        post: int,
+        msg_id: int,
+        max_depth: int = 10,
+        user_resolver: Optional[bb.UserResolver] = None,
+    ) -> list[Message]:
+        """Traverse quote history recursively starting from a message ID up to max_depth."""
+        chain: list[Message] = []
+        visited_ids: set[int] = set()
+        current_id: Optional[int] = msg_id
+
+        while current_id and current_id not in visited_ids and len(chain) < max_depth:
+            visited_ids.add(current_id)
+            msg = self.get_post_by_id(
+                cat=cat, subcat=subcat, post=post, msg_id=current_id, user_resolver=user_resolver
+            )
+            if not msg:
+                break
+            chain.append(msg)
+
+            # Parse parent quote message ID from BBCode text [quotemsg=ID,...]
+            quotes = bb.parse_quotes(msg.text)
+            if quotes and quotes[0].message_id:
+                try:
+                    current_id = int(quotes[0].message_id)
+                except ValueError:
+                    current_id = None
+            else:
+                current_id = None
+
+        return chain
 
     def get_post_form_tokens(
         self, cat: int | str, subcat: int | str, post: int, page: int | str | None = None
     ) -> dict[str, str]:
         """Fetch hash_check, numrep, and form metadata required to submit a reply."""
-        self.ensure_authenticated()
-        cat_str = str(cat)
-        subcat_str = str(subcat)
+        def _fetch() -> dict[str, str]:
+            self.ensure_authenticated()
+            cat_str = str(cat)
+            subcat_str = str(subcat)
 
-        if page is not None:
-            target_page = str(page)
-        elif cat_str == "prive":
-            target_page = "1"
-        else:
-            try:
-                topic = self.get_topic_page(
-                    cat=int(cat_str), subcat=int(subcat_str), post=post, page=1
-                )
-                target_page = str(topic.max_page)
-            except Exception:
+            if page is not None:
+                target_page = str(page)
+            elif cat_str == "prive":
                 target_page = "1"
+            else:
+                try:
+                    topic = self.get_topic_page(
+                        cat=int(cat_str), subcat=int(subcat_str), post=post, page=1
+                    )
+                    target_page = str(topic.max_page)
+                except Exception:
+                    target_page = "1"
 
-        try:
             resp = self.session.get(
                 f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&page={target_page}"
             )
-        except Exception as e:
-            logger.warning("Error fetching post form tokens: %s. Resetting session and retrying...", e)
-            self.reset_session()
-            resp = self.session.get(
-                f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat_str}&subcat={subcat_str}&post={post}&page={target_page}"
-            )
-        tree = lxml_html.fromstring(resp.text)
-        form = tree.xpath('//form[contains(@action, "bddpost.php")]')
-        tokens: dict[str, str] = {}
-        if form:
-            for inp in form[0].xpath('.//input | .//textarea'):
-                name = inp.get("name")
-                if name:
-                    tokens[name] = inp.get("value") or inp.text or ""
-        else:
-            hash_inputs = tree.xpath('//input[@name="hash_check"]')
-            tokens["hash_check"] = hash_inputs[0].get("value") if hash_inputs else ""
-        return tokens
+            tree = lxml_html.fromstring(resp.text)
+            form = tree.xpath('//form[contains(@action, "bddpost.php")]')
+            tokens: dict[str, str] = {}
+            if form:
+                for inp in form[0].xpath('.//input | .//textarea'):
+                    name = inp.get("name")
+                    if name:
+                        tokens[name] = inp.get("value") or inp.text or ""
+            else:
+                hash_inputs = tree.xpath('//input[@name="hash_check"]')
+                tokens["hash_check"] = hash_inputs[0].get("value") if hash_inputs else ""
+            return tokens
+
+        return self._execute_with_retry(
+            _fetch,
+            op_name=f"get_post_form_tokens({cat}#{subcat}#{post})",
+        )
 
     def post_reply(
         self,
@@ -430,138 +522,147 @@ class HFRClient:
             logger.info("[DRY_RUN] Would post to topic %s#%s#%s:\n%s", cat, subcat, post, content)
             return True
 
-        self.ensure_authenticated()
-        tokens = self.get_post_form_tokens(cat=cat, subcat=subcat, post=post)
+        def _post() -> bool:
+            self.ensure_authenticated()
+            tokens = self.get_post_form_tokens(cat=cat, subcat=subcat, post=post)
 
-        formatted_content = bb.emoji_to_cdn_bb(content)
-        post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
-        payload = dict(tokens)
-        payload["content_form"] = formatted_content
-        payload["action_form"] = "1"
-        payload["cat"] = str(cat)
-        payload["subcat"] = str(subcat)
-        payload["post"] = str(post)
-        payload["signature"] = "1"
-        payload["verifform"] = "1"
+            formatted_content = bb.emoji_to_cdn_bb(content)
+            post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
+            payload = dict(tokens)
+            payload["content_form"] = formatted_content
+            payload["action_form"] = "1"
+            payload["cat"] = str(cat)
+            payload["subcat"] = str(subcat)
+            payload["post"] = str(post)
+            payload["signature"] = "1"
+            payload["verifform"] = "1"
 
-        resp = self.session.post(
-            post_url,
-            data=payload,
-            headers={
-                "Referer": f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat}&subcat={subcat}&post={post}"
-            },
-            allow_redirects=True,
-        )
+            resp = self.session.post(
+                post_url,
+                data=payload,
+                headers={
+                    "Referer": f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat}&subcat={subcat}&post={post}"
+                },
+                allow_redirects=True,
+            )
 
-        if resp.status_code in (200, 302):
-            tree = lxml_html.fromstring(resp.text)
-            body_text = tree.xpath("//body")[0].text_content() if tree.xpath("//body") else resp.text
-            if "Afin de prevenir les tentatives de flood" in body_text:
-                logger.error("Failed to post reply: HFR flood protection triggered (%s)", body_text.strip())
-                return False
-            if "Une erreur est survenue" in body_text or ("Erreur" in body_text and "Retour" in body_text):
-                logger.error("Failed to post reply: HFR error page returned (%s)", body_text.strip()[:200])
-                return False
+            if resp.status_code in (200, 302):
+                tree = lxml_html.fromstring(resp.text)
+                body_text = tree.xpath("//body")[0].text_content() if tree.xpath("//body") else resp.text
+                if "Afin de prevenir les tentatives de flood" in body_text:
+                    logger.error("Failed to post reply: HFR flood protection triggered (%s)", body_text.strip())
+                    return False
+                if "Une erreur est survenue" in body_text or ("Erreur" in body_text and "Retour" in body_text):
+                    logger.error("Failed to post reply: HFR error page returned (%s)", body_text.strip()[:200])
+                    return False
 
-            # Check if HFR rendered the intermediate confirmation page ("Un ou plusieurs messages ont été postés...")
-            intermediate_form = tree.xpath('//form[contains(@action, "bddpost.php")]')
-            if intermediate_form and ("messages ont été postés pendant que vous" in body_text or "Attention :" in body_text):
-                logger.info("Intermediate confirmation screen detected on topic %s#%s#%s; confirming post...", cat, subcat, post)
-                new_payload: dict[str, str] = {}
-                for inp in intermediate_form[0].xpath('.//input | .//textarea'):
-                    name = inp.get("name")
-                    if name:
-                        new_payload[name] = inp.get("value") or inp.text or ""
-                new_payload["content_form"] = formatted_content
-                new_payload["action_form"] = "1"
-                new_payload["signature"] = "1"
-                new_payload["verifform"] = "1"
+                # Check if HFR rendered the intermediate confirmation page ("Un ou plusieurs messages ont été postés...")
+                intermediate_form = tree.xpath('//form[contains(@action, "bddpost.php")]')
+                if intermediate_form and ("messages ont été postés pendant que vous" in body_text or "Attention :" in body_text):
+                    logger.info("Intermediate confirmation screen detected on topic %s#%s#%s; confirming post...", cat, subcat, post)
+                    new_payload: dict[str, str] = {}
+                    for inp in intermediate_form[0].xpath('.//input | .//textarea'):
+                        name = inp.get("name")
+                        if name:
+                            new_payload[name] = inp.get("value") or inp.text or ""
+                    new_payload["content_form"] = formatted_content
+                    new_payload["action_form"] = "1"
+                    new_payload["signature"] = "1"
+                    new_payload["verifform"] = "1"
 
-                resp2 = self.session.post(
-                    post_url,
-                    data=new_payload,
-                    headers={
-                        "Referer": f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat}&subcat={subcat}&post={post}"
-                    },
-                    allow_redirects=True,
-                )
-                if resp2.status_code in (200, 302):
-                    tree2 = lxml_html.fromstring(resp2.text)
-                    body2 = tree2.xpath("//body")[0].text_content() if tree2.xpath("//body") else resp2.text
-                    if "Afin de prevenir les tentatives de flood" in body2 or "Une erreur est survenue" in body2:
-                        logger.error("Failed to post reply on confirmation: %s", body2.strip()[:200])
-                        return False
-                    logger.info("Successfully posted reply after confirmation to topic %s#%s#%s", cat, subcat, post)
-                    return True
-                return False
+                    resp2 = self.session.post(
+                        post_url,
+                        data=new_payload,
+                        headers={
+                            "Referer": f"{self.base_url}/forum2.php?config=hfr.inc&cat={cat}&subcat={subcat}&post={post}"
+                        },
+                        allow_redirects=True,
+                    )
+                    if resp2.status_code in (200, 302):
+                        tree2 = lxml_html.fromstring(resp2.text)
+                        body2 = tree2.xpath("//body")[0].text_content() if tree2.xpath("//body") else resp2.text
+                        if "Afin de prevenir les tentatives de flood" in body2 or "Une erreur est survenue" in body2:
+                            logger.error("Failed to post reply on confirmation: %s", body2.strip()[:200])
+                            return False
+                        logger.info("Successfully posted reply after confirmation to topic %s#%s#%s", cat, subcat, post)
+                        return True
+                    return False
 
-            logger.info("Successfully posted reply to topic %s#%s#%s", cat, subcat, post)
-            return True
+                logger.info("Successfully posted reply to topic %s#%s#%s", cat, subcat, post)
+                return True
 
-        logger.error("Failed to post reply. Status: %s", resp.status_code)
-        return False
+            logger.error("Failed to post reply. Status: %s", resp.status_code)
+            return False
+
+        return self._execute_with_retry(_post, op_name=f"post_reply({cat}#{subcat}#{post})")
 
     def list_mps(self, page: int = 1, unread_only: bool = False) -> list[HFRPrivateMessage]:
         """Fetch and return private messages from inbox."""
-        self.ensure_authenticated()
-        url = f"{self.base_url}/forum1.php?config=hfr.inc&cat=prive&page={page}"
-        resp = self.session.get(url)
-        if resp.status_code != 200:
-            logger.error("Failed to fetch private messages: HTTP %s", resp.status_code)
-            return []
+        def _fetch() -> list[HFRPrivateMessage]:
+            self.ensure_authenticated()
+            url = f"{self.base_url}/forum1.php?config=hfr.inc&cat=prive&page={page}"
+            resp = self.session.get(url)
+            if resp.status_code != 200:
+                logger.error("Failed to fetch private messages: HTTP %s", resp.status_code)
+                return []
 
-        tree = lxml_html.fromstring(resp.text)
-        # MesDiscussions uses <tr class="sujet ligne_booleen ..."> for each thread/MP row
-        mp_rows = tree.xpath(
-            '//tr[contains(@class, "sujet") and (contains(@class, "ligne_booleen") or contains(@class, "cBackCouleurTab"))]'
-        )
-        results: list[HFRPrivateMessage] = []
-
-        for row in mp_rows:
-            # 1. Subject & post ID
-            links = row.xpath(
-                './/td[contains(@class, "sujetCase3")]//a | .//a[contains(@class, "cTopic") or contains(@class, "cCatTopic")]'
+            tree = lxml_html.fromstring(resp.text)
+            # MesDiscussions uses <tr class="sujet ligne_booleen ..."> for each thread/MP row
+            mp_rows = tree.xpath(
+                '//tr[contains(@class, "sujet") and (contains(@class, "ligne_booleen") or contains(@class, "cBackCouleurTab"))]'
             )
-            if not links:
-                continue
-            subject = links[0].text_content().strip()
-            href = links[0].get("href", "")
+            results: list[HFRPrivateMessage] = []
 
-            qs = parse_qs(urlparse(href).query)
-            mp_id = qs.get("post", [""])[0]
-
-            # 2. Interlocuteur / Sender (Case 6)
-            author_cells = row.xpath('.//td[contains(@class, "sujetCase6")]')
-            sender = author_cells[0].text_content().strip() if author_cells else "Unknown"
-
-            # 3. Date of last message (Case 9)
-            date_cells = row.xpath('.//td[contains(@class, "sujetCase9")]')
-            date_str = date_cells[0].text_content().strip() if date_cells else str(datetime.now())
-
-            # 4. Unread detection via Case 1 icon (closedbp.gif indicates unread / new message)
-            case1_imgs = row.xpath('.//td[contains(@class, "sujetCase1")]//img')
-            img_src = case1_imgs[0].get("src", "") if case1_imgs else ""
-            img_alt = case1_imgs[0].get("alt", "") if case1_imgs else ""
-            is_unread = (
-                "closedbp" in img_src
-                or "new" in img_src
-                or img_alt.lower() == "on"
-                or "NonLu" in (row.get("class") or "")
-            )
-
-            if unread_only and not is_unread:
-                continue
-
-            results.append(
-                HFRPrivateMessage(
-                    id=mp_id,
-                    sender=sender,
-                    subject=subject,
-                    received_at=date_str,
-                    is_unread=is_unread,
+            for row in mp_rows:
+                # 1. Subject & post ID
+                links = row.xpath(
+                    './/td[contains(@class, "sujetCase3")]//a | .//a[contains(@class, "cTopic") or contains(@class, "cCatTopic")]'
                 )
-            )
-        return results
+                if not links:
+                    continue
+                subject = links[0].text_content().strip()
+                href = links[0].get("href", "")
+
+                qs = parse_qs(urlparse(href).query)
+                mp_id = qs.get("post", [""])[0]
+
+                # 2. Interlocuteur / Sender (Case 6)
+                author_cells = row.xpath('.//td[contains(@class, "sujetCase6")]')
+                sender = author_cells[0].text_content().strip() if author_cells else "Unknown"
+
+                # 3. Date of last message (Case 9)
+                date_cells = row.xpath('.//td[contains(@class, "sujetCase9")]')
+                date_str = date_cells[0].text_content().strip() if date_cells else str(datetime.now())
+
+                # 4. Unread detection via Case 1 icon (closedbp.gif indicates unread / new message)
+                case1_imgs = row.xpath('.//td[contains(@class, "sujetCase1")]//img')
+                img_src = case1_imgs[0].get("src", "") if case1_imgs else ""
+                img_alt = case1_imgs[0].get("alt", "") if case1_imgs else ""
+                is_unread = (
+                    "closedbp" in img_src
+                    or "new" in img_src
+                    or img_alt.lower() == "on"
+                    or "NonLu" in (row.get("class") or "")
+                )
+
+                if unread_only and not is_unread:
+                    continue
+
+                results.append(
+                    HFRPrivateMessage(
+                        id=mp_id,
+                        sender=sender,
+                        subject=subject,
+                        received_at=date_str,
+                        is_unread=is_unread,
+                    )
+                )
+            return results
+
+        return self._execute_with_retry(
+            _fetch,
+            op_name=f"list_mps(page={page}, unread_only={unread_only})",
+        )
 
     def get_mp_page(
         self,
@@ -570,17 +671,23 @@ class HFRClient:
         user_resolver: Optional[bb.UserResolver] = None,
     ) -> Topic:
         """Fetch and parse a private message thread."""
-        self.ensure_authenticated()
-        url = f"{self.base_url}/forum2.php?config=hfr.inc&cat=prive&post={mp_id}&page={page}"
-        resp = self.session.get(url)
-        if resp.status_code != 200:
-            raise RuntimeError(f"Failed to fetch MP thread {mp_id} page {page}: HTTP {resp.status_code}")
+        def _fetch() -> Topic:
+            self.ensure_authenticated()
+            url = f"{self.base_url}/forum2.php?config=hfr.inc&cat=prive&post={mp_id}&page={page}"
+            resp = self.session.get(url)
+            if resp.status_code != 200:
+                raise RuntimeError(f"Failed to fetch MP thread {mp_id} page {page}: HTTP {resp.status_code}")
 
-        topic = Topic(cat=0, subcat=0, post=mp_id)
-        topic.parse_page_html(
-            resp.text, user_resolver=user_resolver or self.user_resolver
+            topic = Topic(cat=0, subcat=0, post=mp_id)
+            topic.parse_page_html(
+                resp.text, user_resolver=user_resolver or self.user_resolver
+            )
+            return topic
+
+        return self._execute_with_retry(
+            _fetch,
+            op_name=f"get_mp_page(mp {mp_id} p.{page})",
         )
-        return topic
 
     def post_mp_reply(
         self,
@@ -594,108 +701,125 @@ class HFRClient:
             logger.info("[DRY_RUN] Would reply to MP %s (to: %s):\n%s", mp_id, recipient, content)
             return True
 
-        self.ensure_authenticated()
-        tokens = self.get_post_form_tokens(cat="prive", subcat=0, post=mp_id)
+        def _post_mp() -> bool:
+            self.ensure_authenticated()
+            tokens = self.get_post_form_tokens(cat="prive", subcat=0, post=mp_id)
 
-        formatted_content = bb.emoji_to_cdn_bb(content)
-        post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
+            formatted_content = bb.emoji_to_cdn_bb(content)
+            post_url = f"{self.base_url}/bddpost.php?config=hfr.inc"
 
-        # Merge all tokens parsed directly from the live page form
-        payload = dict(tokens)
-        payload["content_form"] = formatted_content
-        payload["action_form"] = "2"
-        payload["dest"] = recipient
+            # Merge all tokens parsed directly from the live page form
+            payload = dict(tokens)
+            payload["content_form"] = formatted_content
+            payload["action_form"] = "2"
+            payload["dest"] = recipient
 
-        resp = self.session.post(
-            post_url,
-            data=payload,
-            headers={
-                "Referer": f"{self.base_url}/forum2.php?config=hfr.inc&cat=prive&post={mp_id}"
-            },
-            allow_redirects=True,
+            resp = self.session.post(
+                post_url,
+                data=payload,
+                headers={
+                    "Referer": f"{self.base_url}/forum2.php?config=hfr.inc&cat=prive&post={mp_id}"
+                },
+                allow_redirects=True,
+            )
+
+            if resp.status_code in (200, 302):
+                tree = lxml_html.fromstring(resp.text)
+                body_text = tree.xpath("//body")[0].text_content() if tree.xpath("//body") else resp.text
+                if "Afin de prevenir les tentatives de flood" in body_text:
+                    logger.error("Failed to reply to MP %s: HFR flood protection triggered (%s)", mp_id, body_text.strip())
+                    return False
+                if "Une erreur est survenue" in body_text or "Erreur" in body_text and "Retour" in body_text:
+                    logger.error("Failed to reply to MP %s: HFR error page returned (%s)", mp_id, body_text.strip()[:200])
+                    return False
+
+                logger.info("Successfully posted reply to MP %s", mp_id)
+                return True
+
+            logger.error("Failed to reply to MP %s. Status: %s", mp_id, resp.status_code)
+            return False
+
+        return self._execute_with_retry(
+            _post_mp,
+            op_name=f"post_mp_reply(mp {mp_id} -> {recipient})",
         )
-
-        if resp.status_code in (200, 302):
-            tree = lxml_html.fromstring(resp.text)
-            body_text = tree.xpath("//body")[0].text_content() if tree.xpath("//body") else resp.text
-            if "Afin de prevenir les tentatives de flood" in body_text:
-                logger.error("Failed to reply to MP %s: HFR flood protection triggered (%s)", mp_id, body_text.strip())
-                return False
-            if "Une erreur est survenue" in body_text or "Erreur" in body_text and "Retour" in body_text:
-                logger.error("Failed to reply to MP %s: HFR error page returned (%s)", mp_id, body_text.strip()[:200])
-                return False
-
-            logger.info("Successfully posted reply to MP %s", mp_id)
-            return True
-
-        logger.error("Failed to reply to MP %s. Status: %s", mp_id, resp.status_code)
-        return False
 
     def search_wiki_smilies(
         self, query: str, max_results: int = 15
     ) -> list[SmileyResult]:
         """Search HFR wiki custom smilies matching a keyword or smiley code/ID (e.g. 'koala', '[:aloy:2]', 'aloy:2')."""
-        clean_query = query.strip()
-        if clean_query.startswith("[:") and clean_query.endswith("]"):
-            clean_query = clean_query[2:-1]
-        if ":" in clean_query:
-            clean_query = clean_query.split(":")[0]
+        def _search() -> list[SmileyResult]:
+            clean_query = query.strip()
+            if clean_query.startswith("[:") and clean_query.endswith("]"):
+                clean_query = clean_query[2:-1]
+            if ":" in clean_query:
+                clean_query = clean_query.split(":")[0]
 
-        url = f"{self.base_url}/message-smi-mp-aj.php"
-        params = {"config": "hfr.inc", "findsmilies": clean_query}
-        resp = self.session.get(url, params=params)
-        if resp.status_code != 200:
-            return []
+            url = f"{self.base_url}/message-smi-mp-aj.php"
+            params = {"config": "hfr.inc", "findsmilies": clean_query}
+            resp = self.session.get(url, params=params)
+            if resp.status_code != 200:
+                return []
 
-        tree = lxml_html.fromstring(resp.text)
-        img_nodes = tree.xpath("//img")
-        results: list[SmileyResult] = []
+            tree = lxml_html.fromstring(resp.text)
+            img_nodes = tree.xpath("//img")
+            results: list[SmileyResult] = []
 
-        for img in img_nodes:
-            src = img.get("src", "")
-            alt = img.get("alt", "")
-            title = img.get("title", "") or alt
-            if alt.startswith("[:") and alt.endswith("]"):
-                if query.strip().startswith("[:") and query.strip().endswith("]"):
-                    if alt == query.strip():
-                        results.insert(0, SmileyResult(code=alt, url=src, name=title))
-                        continue
-                results.append(SmileyResult(code=alt, url=src, name=title))
+            for img in img_nodes:
+                src = img.get("src", "")
+                alt = img.get("alt", "")
+                title = img.get("title", "") or alt
+                if alt.startswith("[:") and alt.endswith("]"):
+                    if query.strip().startswith("[:") and query.strip().endswith("]"):
+                        if alt == query.strip():
+                            results.insert(0, SmileyResult(code=alt, url=src, name=title))
+                            continue
+                    results.append(SmileyResult(code=alt, url=src, name=title))
 
-        return results[:max_results]
+            return results[:max_results]
+
+        return self._execute_with_retry(
+            _search,
+            op_name=f"search_wiki_smilies('{query}')",
+        )
 
     def get_smiley_keywords(self, smiley_code: str) -> list[str]:
         """Fetch all keywords/tags associated with a specific smiley code (e.g. '[:itm]', 'itm', '[:aloy:2]')."""
-        code = smiley_code.strip()
-        if not code.startswith("[:"):
-            code = f"[:{code}"
-        if not code.endswith("]"):
-            code = f"{code}]"
+        def _get_keywords() -> list[str]:
+            code = smiley_code.strip()
+            if not code.startswith("[:"):
+                code = f"[:{code}"
+            if not code.endswith("]"):
+                code = f"{code}]"
 
-        # Query wikismilies.php with the base code
-        base_keyword = code[2:-1].split(":")[0]
-        url = f"{self.base_url}/wikismilies.php?config=hfr.inc&threecol=0"
-        payload = {"findcode": "", "findkeyword": base_keyword, "Submit": "Rechercher"}
-        resp = self.session.post(url, data=payload)
-        if resp.status_code != 200:
+            # Query wikismilies.php with the base code
+            base_keyword = code[2:-1].split(":")[0]
+            url = f"{self.base_url}/wikismilies.php?config=hfr.inc&threecol=0"
+            payload = {"findcode": "", "findkeyword": base_keyword, "Submit": "Rechercher"}
+            resp = self.session.post(url, data=payload)
+            if resp.status_code != 200:
+                return []
+
+            tree = lxml_html.fromstring(resp.text)
+            inputs = tree.xpath('//input[contains(@name, "keywords")]')
+            for inp in inputs:
+                idx = inp.get("name", "").replace("keywords", "")
+                smiley_input = tree.xpath(f'//input[@name="smiley{idx}"]')
+                found_code = smiley_input[0].get("value", "") if smiley_input else ""
+                if found_code.lower() == code.lower():
+                    raw_kw = inp.get("value", "").strip()
+                    return [k for k in raw_kw.split(" ") if k]
+
             return []
 
-        tree = lxml_html.fromstring(resp.text)
-        inputs = tree.xpath('//input[contains(@name, "keywords")]')
-        for inp in inputs:
-            idx = inp.get("name", "").replace("keywords", "")
-            smiley_input = tree.xpath(f'//input[@name="smiley{idx}"]')
-            found_code = smiley_input[0].get("value", "") if smiley_input else ""
-            if found_code.lower() == code.lower():
-                raw_kw = inp.get("value", "").strip()
-                return [k for k in raw_kw.split(" ") if k]
-
-        return []
+        return self._execute_with_retry(
+            _get_keywords,
+            op_name=f"get_smiley_keywords('{smiley_code}')",
+        )
 
     def search_wiki_smilies_detailed(
         self, query: str, max_results: int = 15
     ) -> list[SmileyResult]:
-        """Search HFR wiki smilies and attach their associated keywords."""
         clean_query = query.strip()
         if clean_query.startswith("[:") and clean_query.endswith("]"):
             clean_query = clean_query[2:-1]
